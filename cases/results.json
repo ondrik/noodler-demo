@@ -1,0 +1,75 @@
+{
+  "solver": "Z3 version 5.1.0 - 64 bit - build hashcode ccf9f8e330e880b293e1f67df46d093f1550ae1e - mata hashcode d28368a6957a1606162aea3fbe77345f6e1e13d5",
+  "cases": {
+    "open-redirect-backslash": {
+      "answer": "sat",
+      "output": "sat\n(\n  (define-fun u () String\n    (str.replace_all url \"\\\" \"/\"))\n  (define-fun url () String\n    \"/\\u{9}//\")\n)",
+      "seconds": 0.028
+    },
+    "open-redirect-fixed": {
+      "answer": "unsat",
+      "output": "unsat",
+      "seconds": 0.029
+    },
+    "open-redirect": {
+      "answer": "sat",
+      "output": "sat\n(\n  (define-fun url () String\n    \"/\\u{9}/\")\n)",
+      "seconds": 0.026
+    },
+    "path-traversal-fixed": {
+      "answer": "unsat",
+      "output": "unsat",
+      "seconds": 0.021
+    },
+    "path-traversal-twice": {
+      "answer": "sat",
+      "output": "sat\n(\n  (define-fun name () String\n    \"......///.\")\n)",
+      "seconds": 0.024
+    },
+    "path-traversal": {
+      "answer": "sat",
+      "output": "sat\n(\n  (define-fun cleaned () String\n    (str.replace_all name \"../\" \"\"))\n  (define-fun name () String\n    \"....//.\")\n)",
+      "seconds": 0.024
+    },
+    "sql-escape-fixed": {
+      "answer": "unsat",
+      "output": "unsat",
+      "seconds": 0.022
+    },
+    "sql-escape": {
+      "answer": "sat",
+      "output": "sat\n(\n  (define-fun escaped () String\n    (str.replace_all name \"'\" \"\\'\"))\n  (define-fun name () String\n    \"\\' OR 1=1 -- \")\n)",
+      "seconds": 0.029
+    },
+    "sql-truncate": {
+      "answer": "sat",
+      "output": "sat\n(\n  (define-fun cut () String\n    (str.substr (str.replace_all (str.replace_all name \"\\\" \"\\\\\") \"'\" \"\\'\") 0 16))\n  (define-fun name () String\n    \"'''''''a'a\")\n  (define-fun escaped () String\n    (str.replace_all (str.replace_all name \"\\\" \"\\\\\") \"'\" \"\\'\"))\n)",
+      "seconds": 0.042
+    },
+    "url-allowlist-fixed": {
+      "answer": "unsat",
+      "output": "unsat",
+      "seconds": 0.029
+    },
+    "url-allowlist": {
+      "answer": "sat",
+      "output": "sat\n(\n  (define-fun host () String\n    \"api-example.com\")\n  (define-fun url () String\n    \"https://api-example.com/\")\n  (define-fun path () String\n    \"\")\n)",
+      "seconds": 0.03
+    },
+    "xss-escape": {
+      "answer": "unsat",
+      "output": "unsat",
+      "seconds": 0.021
+    },
+    "xss-strip-nested": {
+      "answer": "sat",
+      "output": "sat\n(\n  (define-fun comment () String\n    \"<<SCRIPT>SCRIPT><<SCRIPT>\")\n  (define-fun out () String\n    (str.replace_all (str.to_lower comment) \"<script>\" \"\"))\n)",
+      "seconds": 0.247
+    },
+    "xss-strip": {
+      "answer": "sat",
+      "output": "sat\n(\n  (define-fun comment () String\n    \"<<script>SCRIPT><<script>\")\n  (define-fun out () String\n    (str.replace_all comment \"<script>\" \"\"))\n)",
+      "seconds": 0.141
+    }
+  }
+}

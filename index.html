@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finding bugs with Z3-Noodler</title>
+<meta name="description" content="Five bug classes from real web applications (path traversal, XSS, open redirect, SSRF, SQL injection) found or proved absent with the Z3-Noodler string solver.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Z3-Noodler · string constraint solving</p>
+    <h1>Finding bugs in string-handling code<br>with an SMT solver</h1>
+    <p class="lede">Sanitizers, URL checks and escaping functions are short, and they still have bugs.
+    Each one rewrites a string and then checks it. We translate the code to string constraints
+    and ask <a href="https://github.com/VeriFIT/z3-noodler">Z3-Noodler</a> if an attacker's input
+    exists. A <b>sat</b> answer comes with a concrete exploit. An <b>unsat</b> answer is a proof that
+    no input works.</p>
+    <div class="stats">
+      <div><span class="big">14</span><span>queries</span></div>
+      <div><span class="big bugc">9</span><span>exploits found</span></div>
+      <div><span class="big safec">5</span><span>fixes proved</span></div>
+      <div><span class="big">≤ 0.25 s</span><span>per query</span></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="how">
+    <h2>How it works</h2>
+    <ol class="flow">
+      <li><b>Model the code.</b> Every string operation has a counterpart in the SMT-LIB theory of strings:
+        <code>replace</code> → <code>str.replace_all</code>, <code>startswith</code> → <code>str.prefixof</code>,
+        a regex test → <code>str.in_re</code>. Z3-Noodler also accepts ECMAScript regexes as they
+        are (<code>re.from_ecma2020</code>) and has <code>str.to_lower</code>.</li>
+      <li><b>State the attack.</b> Add the attacker's goal: the cleaned path contains <code>../</code>,
+        the browser sees <code>//host</code>, the SQL literal is not closed properly.</li>
+      <li><b>Ask the solver.</b> <i>sat</i>: the model is an input that triggers the bug.
+        <i>unsat</i>: no input does, for strings of any length.</li>
+    </ol>
+    <p class="note">The results below come from a native build of the solver. <b>Run in the playground</b> opens a query in the
+    <a href="https://verifit.github.io/z3-noodler/playground/">Z3-Noodler playground</a>, which runs
+    the solver locally via WebAssembly, so you can change the code and try your own fix.</p>
+    <nav class="toc">
+      <ol>
+<li><a href="#path-traversal">Path traversal through a one-pass filter</a> <span class="cwe">CWE-22</span></li>
+<li><a href="#xss">Cross-site scripting through tag stripping</a> <span class="cwe">CWE-79</span></li>
+<li><a href="#open-redirect">Open redirect after login</a> <span class="cwe">CWE-601</span></li>
+<li><a href="#url-allowlist">Server-side request forgery through an unescaped dot</a> <span class="cwe">CWE-918</span></li>
+<li><a href="#sql">SQL injection through hand-made escaping</a> <span class="cwe">CWE-89</span></li>
+      </ol>
+    </nav>
+  </section>
+
+  <section class="story" id="path-traversal">
+    <div class="story-head">
+      <span class="cwe">CWE-22</span>
+      <h2><a href="#path-traversal">Path traversal through a one-pass filter</a></h2>
+    </div>
+    <p class="intro">A file-download endpoint deletes <code>../</code> from the requested name so that it
+cannot leave the upload directory. Filters like this appear in real path traversal advisories again and
+again. Deleting a pattern can create a new copy of it from the characters on both sides.</p>
+    
+    <div class="step">
+      <div class="step-head"><span class="num">1</span><h3>The original filter</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python</div>
+          <pre class="src"><code>def safe_open(name):
+    name = name.replace(<span class="s">&quot;../&quot;</span>, <span class="s">&quot;&quot;</span>)
+    return open(os.path.join(UPLOAD_DIR, name))</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">name</span> = <span class="s">&quot;....//.&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">The solver answers with <code>....//.</code>: removing the <code>../</code> in the
+middle glues the outer <code>..</code> and <code>/</code> into a new <code>../</code>.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/path-traversal.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; Path traversal: a filter that deletes &quot;../&quot; from a user-supplied file name.</span>
+<span class="c">;</span>
+<span class="c">;   def safe_open(name):</span>
+<span class="c">;       name = name.replace(&quot;../&quot;, &quot;&quot;)</span>
+<span class="c">;       return open(os.path.join(UPLOAD_DIR, name))</span>
+<span class="c">;</span>
+<span class="c">; Can the cleaned name still climb out of UPLOAD_DIR?</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> name String)                                 <span class="c">; attacker-controlled</span>
+(<span class="k">define-fun</span> cleaned () String (<span class="f">str.replace_all</span> name <span class="s">&quot;../&quot;</span> <span class="s">&quot;&quot;</span>))
+(<span class="k">assert</span> (<span class="f">str.contains</span> cleaned <span class="s">&quot;../&quot;</span>))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=hVLLasMwEPyVRScbbLe9OpQSGgqBQNOG3gxmK68TNbJkpHUolP5713YexwqDvNLszGikH3VS5UOmtG9IlWoBW-QDcMAThYi2BITWWKYAfECGhiwxRahUUdxVCtrgO4EMkUIeh763hpqxgcBhR0XlFvIBSF8LEVuqfU8uGffSct4Zx1jD49wSqLeoKTkrZCJVqfSGDcRDcDDx-Fj0Yrf48sYlH9vN63JVr9bv2cSUpmf1Z3RinkBbQif2JrXIxlpZMt0n-IHBt3AjeKpcEolz6_dGw9tLvdusl0KXNKQtBsq1d5Fnoh0H4_Yp_DcWgMyojxKUdHPw1lIzUbbGUd4O7mowSc-skEQOl0RqFMOT5CX8KZnRFkbJn2f0SI7GxSvbGT0B9YH0MY_IY7GXE3Zy7VYKlaluegdRlfeZYvmX6VtehPr9Aw" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">2</span><h3>The quick fix: filter twice</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python</div>
+          <pre class="src"><code>name = name.replace(<span class="s">&quot;../&quot;</span>, <span class="s">&quot;&quot;</span>).replace(<span class="s">&quot;../&quot;</span>, <span class="s">&quot;&quot;</span>)</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">name</span> = <span class="s">&quot;......///.&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">Nesting one level deeper defeats it: <code>......///.</code>. No fixed number of
+passes is enough, and the solver finds the counterexample for each one.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/path-traversal-twice.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; A common &quot;fix&quot;: run the filter twice.</span>
+<span class="c">;</span>
+<span class="c">;   name = name.replace(&quot;../&quot;, &quot;&quot;).replace(&quot;../&quot;, &quot;&quot;)</span>
+<span class="c">;</span>
+<span class="c">; Is the double filter safe?</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> name String)
+(<span class="k">define-fun</span> once ((s String)) String (<span class="f">str.replace_all</span> s <span class="s">&quot;../&quot;</span> <span class="s">&quot;&quot;</span>))
+(<span class="k">assert</span> (<span class="f">str.contains</span> (once (once name)) <span class="s">&quot;../&quot;</span>))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=dVBLa8MwDP4rQicXkmy7pozRy6DQS-nVUDxHSc0ce1jqVhj771Me3W1gLMny9-D7xk9snyr0uSNscQs78HkccwKLfbhZbKFcE8iFoA9RqIB8BU-NTVs9AJDcSPA8l6bQR3SejMWmebBYKYfFzT_PK8OeZ_IuX9_inwa7nl5sMkxSxzwED8fX8-mw3ynKdOSjK1T7nFgW_ZOUkIZl2YdEda-ec_IExvB9u1kbMCzlbursYgSG1dribOJxzFRk-apC4kJiMAvlfE-6SrkCZ4y_kH-v2ck0DGp91FCjDljhOKfM2D5WKNpruWne-PML" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">3</span><h3>A sound filter</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python</div>
+          <pre class="src"><code>name = name.replace(<span class="s">&quot;..&quot;</span>, <span class="s">&quot;&quot;</span>)</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
+        </div>
+      </div>
+      <p class="after">Deleting every <code>..</code> turns a run of <i>n</i> dots into <i>n</i> mod 2
+dots, so no <code>..</code> survives. Z3-Noodler proves this for <em>all</em> inputs, not just
+the ones a test suite happens to try.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/path-traversal-fixed.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; A sound filter: delete every &quot;..&quot; (not just &quot;../&quot;).</span>
+<span class="c">;</span>
+<span class="c">;   name = name.replace(&quot;..&quot;, &quot;&quot;)</span>
+<span class="c">;</span>
+<span class="c">; A run of n dots becomes n mod 2 dots, so no &quot;..&quot; can be glued together.</span>
+<span class="c">; Can the cleaned name still contain &quot;..&quot;?  (unsat = the filter is sound)</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> name String)
+(<span class="k">assert</span> (<span class="f">str.contains</span> (<span class="f">str.replace_all</span> name <span class="s">&quot;..&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;..&quot;</span>))
+(<span class="k">check-sat</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=NVHbasMwDP2Vg59SSLPLY8oYZTAY7GX0NVA8W03TOfawlLIx9u9TnAwM8tHl6Ej6MVfT3tXGJU-mNTvswWmKHqchCOUWngIJga6Uv9GZpukMqpgEl4mlOG46s2m6uNMHINqR8FBMk-kzWEfVUlZrtqaumXvkKSKdEOGTMN7JpZFY4Zg87ouzVi2I6b-ts1HT0IeJPCT1JGfKc2c8aUQBXCAbNVhEsAwhwKUodogrxyNQTZGtqMS5YJkSAy9Tq7iKSbYh9YPD2_Px8Pqyn52eXLCZtsqmUxf6g-Qh9nPQMlMWVCy5WdvxgtYFHK0KKUXrJGURK9jMFO5M7mOruhSY2ozlJmza29qI_tV86XXM7x8" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+  </section>
+
+  <section class="story" id="xss">
+    <div class="story-head">
+      <span class="cwe">CWE-79</span>
+      <h2><a href="#xss">Cross-site scripting through tag stripping</a></h2>
+    </div>
+    <p class="intro">A comment form deletes <code>&lt;script&gt;</code> tags before it shows comments to
+other users. The browser reads tag names case-insensitively, so the encoding checks the
+<em>lower-cased</em> output with Z3-Noodler's <code>str.to_lower</code>.</p>
+    
+    <div class="step">
+      <div class="step-head"><span class="num">1</span><h3>The original sanitizer</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">javascript</div>
+          <pre class="src"><code>function sanitize(comment) {
+  return comment.replaceAll(<span class="s">&quot;&lt;script&gt;&quot;</span>, <span class="s">&quot;&quot;</span>);
+}</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.14 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">comment</span> = <span class="s">&quot;&lt;&lt;script&gt;SCRIPT&gt;&lt;&lt;script&gt;&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">The attack combines two bugs: the filter is case-sensitive and does only one pass.
+Deleting both <code>&lt;script&gt;</code> tags leaves <code>&lt;SCRIPT&gt;&lt;</code>.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/xss-strip.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; XSS: a &quot;sanitizer&quot; that deletes &lt;script&gt; tags from a comment before it is</span>
+<span class="c">; put into an HTML page.</span>
+<span class="c">;</span>
+<span class="c">;   function sanitize(comment) {</span>
+<span class="c">;     return comment.replaceAll(&quot;&lt;script&gt;&quot;, &quot;&quot;);</span>
+<span class="c">;   }</span>
+<span class="c">;</span>
+<span class="c">; HTML tag names are case-insensitive, so the browser runs a script if the</span>
+<span class="c">; lower-cased output contains &quot;&lt;script&gt;&quot;.  Can that happen?</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> comment String)
+(<span class="k">define-fun</span> out () String (<span class="f">str.replace_all</span> comment <span class="s">&quot;&lt;script&gt;&quot;</span> <span class="s">&quot;&quot;</span>))
+(<span class="k">assert</span> (<span class="f">str.contains</span> (<span class="f">str.to_lower</span> out) <span class="s">&quot;&lt;script&gt;&quot;</span>))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=VVJNa9wwEP0rD51ssJf2ugktIRBa2B7K5pCDYVG0Y6-oPDLSOCkJ-e8d2btLerLGM_O-mHfzYrZfG-PikczW3OBpv9_CojPZshf_RqkzkJMVHCmQUMZtdslP8g1ih4w-xVHnXRxHYsEz9TERvMDnjm8wzfpiibCMH4-_dpjsQBvtlCbQz-zER8aFrToD1XhfJ4BEMie-MGwSTcE6uguh6sxFS2caldyZ-oz7cWZYKFUn2I4q3ao0ZzO1njNxVsYXapCjGiQ8p_iaKSHNrJNYkeH70ixYIb5Sasv6EXGW4sxFFqtY-KxkA9yr2yWzk50m4u8dV5mkDXHwDr8fDvvdz7tafx7JBdXUKk6Wa4Z7SZ6Htd97plZTKoyo6nMPVZZ0SeJgQ7jufhayJlJwbFZjsm5dNS-VxMPiq-DX_20vi-5E7k-brZRiUAuj3knQwjRmXA4nm-2Xxoi-9fNXT8h8_AM" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">2</span><h3>The quick fix: lower-case first</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">javascript</div>
+          <pre class="src"><code>function sanitize(comment) {
+  return comment.toLowerCase().replaceAll(<span class="s">&quot;&lt;script&gt;&quot;</span>, <span class="s">&quot;&quot;</span>);
+}</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.25 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">comment</span> = <span class="s">&quot;&lt;&lt;SCRIPT&gt;SCRIPT&gt;&lt;&lt;SCRIPT&gt;&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">This closes the case hole but not the nesting one. The solver now needs the
+lower-casing and the replacement together, and still finds an attack.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/xss-strip-nested.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; The developer adds case folding: lower-case first, then delete the tags.</span>
+<span class="c">;</span>
+<span class="c">;   function sanitize(comment) {</span>
+<span class="c">;     return comment.toLowerCase().replaceAll(&quot;&lt;script&gt;&quot;, &quot;&quot;);</span>
+<span class="c">;   }</span>
+<span class="c">;</span>
+<span class="c">; Still exploitable?</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> comment String)
+(<span class="k">define-fun</span> out () String (<span class="f">str.replace_all</span> (<span class="f">str.to_lower</span> comment) <span class="s">&quot;&lt;script&gt;&quot;</span> <span class="s">&quot;&quot;</span>))
+(<span class="k">assert</span> (<span class="f">str.contains</span> out <span class="s">&quot;&lt;script&gt;&quot;</span>))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=TZHbasMwDIZfRfgqgaRst-nYKIPBoDejuwwUz1ETM8UOltqVlb77lENHwWAd_f2yLuZkqsfCuNigqcwaPjuEBk9IccAEtmkYnGWEQ6TGh7YCij-YyjnmE0sB0mHQHkLB0QaxLa_qsNYDAIdjcOJjALbBi__FzMW-xyA5XOYKgIRyTAGWxEridoS8KiPLVwkHsg43RFltntglP8hzbQqoTW3yhXJdeDvxRIDngaIX-0X4UoeMUUqKrXfw8bbfbd83uQYbdGQTli4Glhta-5NOOecPPmCp8iEeBbJ8yUHGkm6i9lZpU0DifvoZ-J_uXuysdXzWMmOSuUfRYn3gCXBfPlW6Dt13yVZGp9URet0RqWMK009LY1M9FEbU1uus6zPXPw" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">3</span><h3>The fix: escape, do not delete</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">javascript</div>
+          <pre class="src"><code>function sanitize(comment) {
+  return comment.replaceAll(<span class="s">&quot;&lt;&quot;</span>, <span class="s">&quot;&amp;lt;&quot;</span>);
+}</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
+        </div>
+      </div>
+      <p class="after">With <code>&lt;</code> escaped, the output cannot open any tag: unsat.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/xss-escape.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; The fix: escape &quot;&lt;&quot; instead of deleting tags.</span>
+<span class="c">;</span>
+<span class="c">;   function sanitize(comment) {</span>
+<span class="c">;     return comment.replaceAll(&quot;&lt;&quot;, &quot;&amp;lt;&quot;);</span>
+<span class="c">;   }</span>
+<span class="c">;</span>
+<span class="c">; Can the output contain any tag opening at all?  (unsat = no)</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> comment String)
+(<span class="k">define-fun</span> out () String (<span class="f">str.replace_all</span> comment <span class="s">&quot;&lt;&quot;</span> <span class="s">&quot;&amp;lt;&quot;</span>))
+(<span class="k">assert</span> (<span class="f">str.contains</span> out <span class="s">&quot;&lt;&quot;</span>))
+(<span class="k">check-sat</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=PZHdasMwDIVf5eCLkUBSttt0Y5TBYLCb0V0GinGU1tSVQ6yMbqXvPuWnBYMtSzrnk30xP6Z6KoyLDZnKrPF9ILT-XIGSsx2hNs-1geckZBvEFg0FEs97iN2nVc1rXQDagZ34yEiWvfg_ylw8nYglx2WuAHqSoWcsiVVPXbCONiFkk0uhZg9B1rXJF9HrIv9mGaJgcZBuEBVgsZ5h-XekQOyIRyIrsCG8AtnASYMXcMxrzhJJGeLeO3y977afH5vxsiEXbE-liiW5MWErvSrN-dYzlTrXaIssX3LIkvQ39p363Xvnp7rPMIrYlKiXuWWhTpPcVDuVuAO5Y6m4GpjCnKbvSKZ6LIzoWbezfoy5_gM" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+  </section>
+
+  <section class="story" id="open-redirect">
+    <div class="story-head">
+      <span class="cwe">CWE-601</span>
+      <h2><a href="#open-redirect">Open redirect after login</a></h2>
+    </div>
+    <p class="intro">After login, the app redirects to <code>?next=&lt;url&gt;</code>. To keep users on the
+site, it accepts local paths but rejects protocol-relative URLs (<code>//evil.example</code>). The encoding
+models how a browser parses the URL under the <a href="https://url.spec.whatwg.org/">WHATWG URL
+standard</a>: it removes tabs and newlines and treats <code>\</code> like <code>/</code>.</p>
+    
+    <div class="step">
+      <div class="step-head"><span class="num">1</span><h3>The original check</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python</div>
+          <pre class="src"><code>def is_safe_redirect(url):
+    return url.startswith(<span class="s">&quot;/&quot;</span>) and not url.startswith(<span class="s">&quot;//&quot;</span>)</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">url</span> = <span class="s">&quot;/\u{9}/&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after"><code>/\t/</code> (slash, tab, slash) passes the check. The browser deletes
+the tab and goes to another host.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/open-redirect.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; Open redirect: after login, the app redirects to ?next=&lt;url&gt;.  To stay on</span>
+<span class="c">; the same site, it accepts paths but not protocol-relative URLs (//host).</span>
+<span class="c">;</span>
+<span class="c">;   def is_safe_redirect(url):</span>
+<span class="c">;       return url.startswith(&quot;/&quot;) and not url.startswith(&quot;//&quot;)</span>
+<span class="c">;</span>
+<span class="c">; What the browser makes of the URL (WHATWG URL standard): it removes tabs</span>
+<span class="c">; and newlines, and treats &quot;\&quot; like &quot;/&quot;.  Can it start with &quot;//&quot;, i.e. go to</span>
+<span class="c">; another host?</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> url String)
+(<span class="k">define-fun</span> browser ((s String)) String
+  (<span class="f">str.replace_all</span>
+    (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> s <span class="s">&quot;\u{9}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{a}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{d}&quot;</span> <span class="s">&quot;&quot;</span>)
+    <span class="s">&quot;\u{5c}&quot;</span> <span class="s">&quot;/&quot;</span>))
+(<span class="k">assert</span> (<span class="f">str.prefixof</span> <span class="s">&quot;/&quot;</span> url))
+(<span class="k">assert</span> (not (<span class="f">str.prefixof</span> <span class="s">&quot;//&quot;</span> url)))
+(<span class="k">assert</span> (<span class="f">str.prefixof</span> <span class="s">&quot;//&quot;</span> (browser url)))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=jVNNi9swEP0rg04O2E576KHetstS6AcslHa35GIIE3kcm8iSkcZJyrL_vSN5Y2gDpT7YozfPM-_NoCd1VNXrXGnXkKrUDXwbyYKnpvekuQJsmTwYt-9tDtwR4Dgu6QDs4NbSmd-_m7z5UAI8OgiMv8DZ2t6kHwIO8uqZcugZUGsa5ccRuQuwmxisYxi9Y6edKTwZ5P5I8PPHfYBsve5c4FUptWI5gIZa6MM2YEvbi4pMWq-qOR8fTzx5C4KWIsVzOPXcZbVa12oFaJvU8Tob0y99Nh1y0r7z7hTE_4AHCuDaBIo0yDZf7h43n1MsZWyDvllV0aCnwR2FzLgLsVZqSCfTWwp5OrEnlAnUqq5rBaY_ECRxMr2PaGONJAyiMJiFyehKKmHvZOBzUSdKPMTp3NY2C8RF3JGG75-2D_df78RJ1pA26KnQzoZkGB7Y93Y_51oRVLSTXTxmWbgQVi9BbQGywL70NBrUtEVjInaN_gcwO56e3j6LawllGTOAfwPNAszNZvSNnuG4p2gBg6jmuc_oxc9Z9pPS0esflLjwK95C_FexSMouE1rYuiN9KAJyPOxl9oPcHiMHlashXaegqle5Yonlc5aLpZ5_Aw" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">2</span><h3>The quick fix: normalize backslashes</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python</div>
+          <pre class="src"><code>def is_safe_redirect(url):
+    u = url.replace(<span class="s">&quot;\\&quot;</span>, <span class="s">&quot;/&quot;</span>)
+    return u.startswith(<span class="s">&quot;/&quot;</span>) and not u.startswith(<span class="s">&quot;//&quot;</span>)</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">url</span> = <span class="s">&quot;/\u{9}//&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">The patch fixes the backslash bypass from a bug report but not the tab
+bypass, and the solver finds it right away. A deny-list has to model the parser exactly, so it
+is easy to get wrong.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/open-redirect-backslash.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; A &quot;fix&quot; after the first bug report: also check with backslashes turned</span>
+<span class="c">; into slashes.</span>
+<span class="c">;</span>
+<span class="c">;   def is_safe_redirect(url):</span>
+<span class="c">;       u = url.replace(&quot;\\&quot;, &quot;/&quot;)</span>
+<span class="c">;       return u.startswith(&quot;/&quot;) and not u.startswith(&quot;//&quot;)</span>
+<span class="c">;</span>
+<span class="c">; Is that enough?</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> url String)
+(<span class="k">define-fun</span> browser ((s String)) String
+  (<span class="f">str.replace_all</span>
+    (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> s <span class="s">&quot;\u{9}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{a}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{d}&quot;</span> <span class="s">&quot;&quot;</span>)
+    <span class="s">&quot;\u{5c}&quot;</span> <span class="s">&quot;/&quot;</span>))
+(<span class="k">define-fun</span> u () String (<span class="f">str.replace_all</span> url <span class="s">&quot;\u{5c}&quot;</span> <span class="s">&quot;/&quot;</span>))
+(<span class="k">assert</span> (<span class="f">str.prefixof</span> <span class="s">&quot;/&quot;</span> u))
+(<span class="k">assert</span> (not (<span class="f">str.prefixof</span> <span class="s">&quot;//&quot;</span> u)))
+(<span class="k">assert</span> (<span class="f">str.prefixof</span> <span class="s">&quot;//&quot;</span> (browser url)))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=jZJNSwMxEIb_ypBTCm3VgwdXRHoRBC_idaGk2dnd0DSRzEQLpf_dSdMqWhFz2eSZd-d7p95UczVVNnaoGnULC2hV77atAtMzJuARoXeJGFZ5gISvMXEDxlMEO6Jdw7vjEVbGrskbGpGAcwrYteEWXOAIRzwXUBhAhz04WpLpcZmwcwkt65z8pKn2cjLcgaC5xPPGom5VW46aSnYXrZp8KROWeJDnxCYxlWx01YAJHYTIZ7ajg-LjUdIdDQOGmIfxvg2akGc-Ds7C88Py5elxIVLdofUm4czGII2QxOCFkwtDtfUu4KzPAVYpvpP0TGs6CSbHSxsANHE6VbQ03hd2Tv8BCEo_8u5mL2OSq9RagfkJuk9Qg1V6bSsujfhRQgZ9Svk8bin8dw-GpG6uf7wmcbeNfTVD_iYo8zhTHWV_OSoSfepvWZaD-rCBMzJcHoNMbiNr7OWhpmpz2GtSzeVUsdzls5UNV_sP" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">3</span><h3>The fix: an allow-list</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python</div>
+          <pre class="src"><code>SAFE = re.compile(<span class="s">r&quot;/(?:[A-Za-z0-9._~-][A-Za-z0-9._~/-]*)?(?:\?[A-Za-z0-9=&amp;._~-]*)?&quot;</span>)
+
+def is_safe_redirect(url):
+    return SAFE.fullmatch(url) is not None</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
+        </div>
+      </div>
+      <p class="after">The regular expression is pasted into the query as is, through Z3-Noodler's
+<code>re.from_ecma2020</code>. Unsat: none of the accepted URLs leaves the site, with any
+combination of the browser's rewrites.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/open-redirect-fixed.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; The fix: an allow-list of characters instead of a deny-list of prefixes.</span>
+<span class="c">;</span>
+<span class="c">;   SAFE = re.compile(r&quot;/(?:[A-Za-z0-9._~-][A-Za-z0-9._~/-]*)?(?:\?[A-Za-z0-9=&amp;._~-]*)?&quot;)</span>
+<span class="c">;   def is_safe_redirect(url):</span>
+<span class="c">;       return SAFE.fullmatch(url) is not None</span>
+<span class="c">;</span>
+<span class="c">; Can an accepted url go to another host?  (unsat = no)</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> url String)
+(<span class="k">define-fun</span> browser ((s String)) String
+  (<span class="f">str.replace_all</span>
+    (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> s <span class="s">&quot;\u{9}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{a}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{d}&quot;</span> <span class="s">&quot;&quot;</span>)
+    <span class="s">&quot;\u{5c}&quot;</span> <span class="s">&quot;/&quot;</span>))
+(<span class="k">assert</span> (<span class="f">str.in_re</span> url (<span class="f">re.from_ecma2020</span> <span class="s">&#x27;/(?:[A-Za-z0-9._~-][A-Za-z0-9._~/-]*)?(?:\?[A-Za-z0-9=&amp;._~-]*)?&#x27;</span>)))
+(<span class="k">assert</span> (<span class="f">str.prefixof</span> <span class="s">&quot;//&quot;</span> (browser url)))
+(<span class="k">check-sat</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=pVJNa9wwEP0rgw6NXFbebaCHOIRlKQ0EQqFsT42CUeTxWlSWlpHcpA3pb-_Y3iQ0uQRqBB69eZp583Evforqw0LY2KCoxCl86xBad1eBCWC8j7fKu5QhtmA7Q8ZmpAQupIymGVEDDYZfT6Q9Ib_GVOpwygcAtpvzz3AGhKWN_d55lKTFUq6rq436btTvlTop6z_q-p_rUl2_L9ZM0nr97Dh7NzHZo0UxR2-wBZfqZFqsCRtHaLMcyBfV7B8_wjxQmISU7eB9b7LtJhI_hRAzfIkBD4I_jXXzsRb3GRtgGuwi5MhozB0SdDHlNYAcQjKZKwuRtciEWfm4cxa-ntfby4vNCDZovSFUNnLDplDbTC7sZl_rAqp2CHBD8TZxZCnTI6E4GDpwppSpJNx7Y7HmmYzYa_QNQAIttB7uTx60GE1RHADzEmiegDnZjH60M7xkfCzBJFad5zwucP-nEiWPuqXY12h7c7w6XsHR_477qHiVb1403jiWw3pAPjZxnOvEth3aH4pnxBexEP2050lUq4XIbPPvjjdePPwF" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+  </section>
+
+  <section class="story" id="url-allowlist">
+    <div class="story-head">
+      <span class="cwe">CWE-918</span>
+      <h2><a href="#url-allowlist">Server-side request forgery through an unescaped dot</a></h2>
+    </div>
+    <p class="intro">A webhook may only call the company's own API servers, and a regular expression
+checks the URL before the server fetches it. The encoding states the attacker's goal: a URL that
+passes the check, whose host is <em>not</em> a subdomain of <code>example.com</code>, and that
+ends in <code>.com</code>, so anyone can register it.</p>
+    
+    <div class="step">
+      <div class="step-head"><span class="num">1</span><h3>The original check</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">javascript</div>
+          <pre class="src"><code>const ALLOWED = /^https:\/\/(www|api).example.com\<span class="c">//;</span>
+if (!ALLOWED.test(url)) throw new Error(<span class="s">&quot;forbidden host&quot;</span>);
+await fetch(url);</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">host</span> = <span class="s">&quot;api-example.com&quot;</span></div><div><span class="var">url</span> = <span class="s">&quot;https://api-example.com/&quot;</span></div><div><span class="var">path</span> = <span class="s">&quot;&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">In a regular expression, <code>.</code> matches any character, so the attacker
+can register <code>api-example.com</code> and the check lets it through.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/url-allowlist.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; URL allow-list: a webhook may only call our own API servers.</span>
+<span class="c">;</span>
+<span class="c">;   const ALLOWED = /^https:\/\/(www|api).example.com\//;</span>
+<span class="c">;   if (!ALLOWED.test(url)) throw new Error(&quot;forbidden host&quot;);</span>
+<span class="c">;   fetch(url);</span>
+<span class="c">;</span>
+<span class="c">; Is there an allowed url whose host is NOT example.com or one of its</span>
+<span class="c">; subdomains?</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> url String)
+(<span class="k">declare-const</span> host String)
+(<span class="k">declare-const</span> path String)
+(<span class="k">assert</span> (<span class="f">str.in_re</span> url (<span class="f">re.from_ecma2020</span> <span class="s">&#x27;^https://(www|api).example.com/.*&#x27;</span>)))
+(<span class="k">assert</span> (= url (<span class="f">str.++</span> <span class="s">&quot;https://&quot;</span> host <span class="s">&quot;/&quot;</span> path)))
+(<span class="k">assert</span> (<span class="f">str.in_re</span> host (<span class="f">re.+</span> (<span class="f">re.union</span> (<span class="f">re.range</span> <span class="s">&quot;a&quot;</span> <span class="s">&quot;z&quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;0&quot;</span> <span class="s">&quot;9&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;-&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;.&quot;</span>)))))
+(<span class="k">assert</span> (<span class="f">str.suffixof</span> <span class="s">&quot;.com&quot;</span> host))                          <span class="c">; registrable by the attacker</span>
+(<span class="k">assert</span> (not (<span class="f">str.in_re</span> host (<span class="f">re.from_ecma2020</span> <span class="s">&#x27;([a-z0-9-]+\.)*example\.com&#x27;</span>))))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=dVNRb9MwEP4rh1-arE1a9rZWE6rEkCpVDBiIBwyV61waq4mvst2lG_DfOadBdHSLrPh85-_zd-fzT3Evpq9HQlOBYipm8OXTElRdU5vVxocpKGhxXRFtoVEPQLZ-AM1xoL0Dai3MPyzAo7tH53NpZzwAQJP1AebL5e3Xm7dwDeMfVQg7P5VyzCNp2_aX2pk0x4NqdjXmmhr2j3u0KSF51YPzgD4ke1enKYTKUQsWW7hxjlwiRUlubYoCLVTkgxRpz1Bi0FWHmvWaFp7h6BCUPaaHBXAcWgZihwbj4f3tZzjRBMQ5WgQqwQQfafx-XVCjjPVvpE08hqymjdHw8d3qbrmYp-wsUNfKYXasQTzjLjhjN-ex7tSXgjsVqpOg8lzkAIkPLjd2xYlE5sRhXjpqVqgbdTm5nMCgr_T4-SqP84tBmp4SXh-JIu9wCFL8hUtx1CdFNKOap7h_QrptUcmw---tIdtZTtkNMoFiAike-XqeuCed-6pzR7ZAkU2K7MyTsyc9P97vy9Ic-HJ4R-ygo2JulBe_GTjccFs7ta4R1g-xJ0CFoPQW3Qm7pecz_K_WyTeVPU6yq-z7UMo8vegLzTbLGfSKdYV6m3kV4mLDHdPwU6t5IUai6d6eF9PJSAS2eTrwKxS__wA" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">2</span><h3>The fix: escape the dots</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">javascript</div>
+          <pre class="src"><code>const ALLOWED = /^https:\/\/(www|api)\.example\.com\<span class="c">//;</span></code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
+        </div>
+      </div>
+      <p class="after">Unsat: every URL that passes the check goes to <code>example.com</code>.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/url-allowlist-fixed.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; The fix: escape the dot.</span>
+<span class="c">;</span>
+<span class="c">;   const ALLOWED = /^https:\/\/(www|api)\.example\.com\//;</span>
+<span class="c">;</span>
+<span class="c">; (unsat = every allowed url goes to a subdomain of example.com)</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> url String)
+(<span class="k">declare-const</span> host String)
+(<span class="k">declare-const</span> path String)
+(<span class="k">assert</span> (<span class="f">str.in_re</span> url (<span class="f">re.from_ecma2020</span> <span class="s">&#x27;^https://(www|api)\.example\.com/.*&#x27;</span>)))
+(<span class="k">assert</span> (= url (<span class="f">str.++</span> <span class="s">&quot;https://&quot;</span> host <span class="s">&quot;/&quot;</span> path)))
+(<span class="k">assert</span> (<span class="f">str.in_re</span> host (<span class="f">re.+</span> (<span class="f">re.union</span> (<span class="f">re.range</span> <span class="s">&quot;a&quot;</span> <span class="s">&quot;z&quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;0&quot;</span> <span class="s">&quot;9&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;-&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;.&quot;</span>)))))
+(<span class="k">assert</span> (<span class="f">str.suffixof</span> <span class="s">&quot;.com&quot;</span> host))                          <span class="c">; registrable by the attacker</span>
+(<span class="k">assert</span> (not (<span class="f">str.in_re</span> host (<span class="f">re.from_ecma2020</span> <span class="s">&#x27;([a-z0-9-]+\.)*example\.com&#x27;</span>))))
+(<span class="k">check-sat</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=dZLditswEIVfZdBNrE38071bh71YaAuFQClb6EXVhok8sc3akpHkTXbbvntHTkqTpjFCHp2RPh-P5od4FuWbhdC2IlGKJXxuCLbtvgTyGgeCwOvKhkyZJQ8A0Nb4AA-r1ccv797CPeTfmxAGXyqV80h2u91PHFqpVEZ77IeOONK251y-PEKS0XgMfJaeyb0Adp3dUQWj66C25CFYQPDjprI9tgbsFo6oCJLKJJ5C2tm61fDp_fpx9eEhihXpDh2lB4MR9hhca-rLXGN5upYcMDQnSfSeXIDEB5e1Zu1oIieOsq2z_Zp0j7fFbQGzYxny6yXIs5uZlKfQ-wMssudzUOIPQomDRyViGB2dn_trZtoW3cyneTStNVPk0NTEAGSAEq9KyDO5mOS7SY60YCNNifRCyViRl5_345bbhK-Gd8TrPTiWEq4-S3BUt3wWNx3B5mVqLQwB9RO5E7qx___Df-qdfMX0tUjv0m9zLq-8OSv17OhYN6SfUm42XoiF6Kde96IsFiJwzK89d7349Rs" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+  </section>
+
+  <section class="story" id="sql">
+    <div class="story-head">
+      <span class="cwe">CWE-89</span>
+      <h2><a href="#sql">SQL injection through hand-made escaping</a></h2>
+    </div>
+    <p class="intro">A query is built by escaping quotes in user input. The encoding asks if the escaped
+text can fail to be a well-formed body of a MySQL-style string literal,
+<code>([^'\\]|\\.)*</code>. If it does, a quote closes the literal early and the rest of the
+input runs as SQL.</p>
+    
+    <div class="step">
+      <div class="step-head"><span class="num">1</span><h3>The original escaping</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">php</div>
+          <pre class="src"><code>$sql = <span class="s">&quot;SELECT * FROM users WHERE name = &#x27;&quot;</span>
+     . str_replace(<span class="s">&quot;&#x27;&quot;</span>, <span class="s">&quot;\\&#x27;&quot;</span>, $name) . <span class="s">&quot;&#x27;&quot;</span>;</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">name</span> = <span class="s">&quot;\&#x27; OR 1=1 -- &quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">The classic: the input <code>\'</code> becomes <code>\\'</code>, an escaped
+backslash followed by a bare quote. We also required the payload to end with
+<code> OR 1=1 -- </code>, and the solver built a complete exploit around it.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/sql-escape.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; SQL injection: hand-made escaping of a quoted string literal (MySQL-style</span>
+<span class="c">; literals, where &quot;\&quot; escapes the next character).</span>
+<span class="c">;</span>
+<span class="c">;   $sql = &quot;SELECT * FROM users WHERE name = &#x27;&quot;</span>
+<span class="c">;        . str_replace(&quot;&#x27;&quot;, &quot;\\&#x27;&quot;, $name) . &quot;&#x27;&quot;;</span>
+<span class="c">;</span>
+<span class="c">; The literal stays closed iff the escaped text is a sequence of ordinary</span>
+<span class="c">; characters and backslash escapes: ([^&#x27;\\]|\\.)*.  Can the attacker break</span>
+<span class="c">; out of the literal and append SQL of their choice?</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> name String)
+(<span class="k">define-fun</span> escaped () String (<span class="f">str.replace_all</span> name <span class="s">&quot;&#x27;&quot;</span> <span class="s">&quot;\u{5c}&#x27;&quot;</span>))
+(<span class="k">assert</span> (not (<span class="f">str.in_re</span> escaped (<span class="f">re.from_ecma2020</span> <span class="s">&#x27;([^\x27\\]|\\.)*&#x27;</span>))))
+(<span class="k">assert</span> (<span class="f">str.suffixof</span> <span class="s">&quot; OR 1=1 -- &quot;</span> name))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=VVJha9swEP0rhyjELrFJAmOQUMYoKRuklCaFfai7cJXPsRZZSiR5S2j733eyk271B0unu_fu7t29iN9iOh4KaUsSUzGD1f0ClPlFMihrplCjKbMGSwLyEnfKbMBWgLBvbaASfHDxSatADjUkt0fGZz4cNRVmdn73Q_hTkyMoRFEUoqciD6EmMHQIIGt0KDk2zRkWkQAXfq_hiiGr-WJ-_QCXcLO8u4XWk_Pw49t8OQeDDXHIgGk7SPflsai1o51GSUkh2DvsExfd9SKiUg7rXLNTvgcu5dyFD3j0ILX13KGqqq7OvuYSQqxXeZbA074lIykKYl2pDLpjpHpvhoNMCc8ot16jr89tTyF5_DmI9Ty9xn-eXuYA12i6PBgCA8jBsyPcRj7bhpgi_Fdh5MXdjviI8-q9ynFqqyR9KUziKWTabpSE-5v1avH9a8qPJUmNjjJpjQ-9eqtugL2zUoayqjXvvSbpyQ8Ja5qfNF2j1j24U7DTtn35JN_YSCMTep5RgMTY0AOV4Xn8Y3WUV842a5INTkaTEQxYkKI4TD5_EGWQph_oIpNvq0oduF_Oe7eE8dUYsiwa3VBjtKxJbjOPIRobVqHhzdZsiKFoulX3YjoaisB3Pg689OLtLw" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">2</span><h3>The fix: escape the escape character first</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">php</div>
+          <pre class="src"><code>$esc = str_replace(<span class="s">&quot;&#x27;&quot;</span>, <span class="s">&quot;\\&#x27;&quot;</span>, str_replace(<span class="s">&quot;\\&quot;</span>, <span class="s">&quot;\\\\&quot;</span>, $name));</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
+        </div>
+      </div>
+      <p class="after">Unsat: two chained <code>replace_all</code>s, which Z3-Noodler handles
+as a composition of transducers, never produce a broken literal. (Prepared statements are still
+the better fix.)</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/sql-escape-fixed.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; The fix: escape the escape character first (or, better, use a prepared</span>
+<span class="c">; statement).</span>
+<span class="c">;</span>
+<span class="c">;   $esc = str_replace(&quot;&#x27;&quot;, &quot;\\&#x27;&quot;, str_replace(&quot;\\&quot;, &quot;\\\\&quot;, $name));</span>
+<span class="c">;</span>
+<span class="c">; Can the attacker still break out of the literal?  (unsat = no)</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> name String)
+(<span class="k">define-fun</span> escaped () String
+  (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> name <span class="s">&quot;\u{5c}&quot;</span> <span class="s">&quot;\u{5c}\u{5c}&quot;</span>) <span class="s">&quot;&#x27;&quot;</span> <span class="s">&quot;\u{5c}&#x27;&quot;</span>))
+(<span class="k">assert</span> (not (<span class="f">str.in_re</span> escaped (<span class="f">re.from_ecma2020</span> <span class="s">&#x27;([^\x27\\]|\\.)*&#x27;</span>))))
+(<span class="k">check-sat</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=ZVJhS8MwEP0rRxiskbbMgQgdIiIIgl9kfjNabul1K2uTkaQymPvvXrqOKeZDc_fecffeNQfxJYrrVGhbkSjEAt42BHWzL4C8xh1B4HwM9QYd6kCOC5wPkFiXwooCIyn0ngBh52iHjiplFuADBurIBJlzGhGACbeCO6ZcyZUtakqUmCqRghKKzxD-ZSN8KThnE4MdSbkYOz-iGZRiCKi3rNCHpm1h5Qi3YPsAth74tmGx2N4DJL3xGFiLsVKZxFPIWrtuNLw-lcuX54cIVqRbdpNpa9hunAjL4BqzPpF1YyirezPup4JEjrwyPIBt5KONElnMP2BoGG31hxt9VOJXfIYkDOu5MJzIOB29J8e_wNhwatwY3tlFiaO8drYrSXc4n81nME3eP5Xaz2_jAj--4zeXV1Mph3Z6Q3qb8UI4EanohjfhRTFLReCYrz2_DnH8AQ" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">3</span><h3>Then someone truncates the value</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">php</div>
+          <pre class="src"><code>$esc = str_replace(<span class="s">&quot;&#x27;&quot;</span>, <span class="s">&quot;\\&#x27;&quot;</span>, str_replace(<span class="s">&quot;\\&quot;</span>, <span class="s">&quot;\\\\&quot;</span>, $name));
+$esc = substr($esc, 0, 16);   <span class="c">// fit the column</span></code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.04 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">name</span> = <span class="s">&quot;&#x27;&#x27;&#x27;&#x27;&#x27;&#x27;&#x27;a&#x27;a&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">Cutting the value after escaping can split an escape sequence in two.
+The solver finds an input of only letters and quotes whose escaped form is cut right after a
+backslash, and that backslash escapes the closing quote. This needs string lengths, positions and
+the transducers together.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/sql-truncate.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; Escaping is now correct, but the escaped value is cut to fit a 16-character</span>
+<span class="c">; column (or a log line, or a cache key) *after* escaping:</span>
+<span class="c">;</span>
+<span class="c">;   $esc = str_replace(&quot;&#x27;&quot;, &quot;\\&#x27;&quot;, str_replace(&quot;\\&quot;, &quot;\\\\&quot;, $name));</span>
+<span class="c">;   $esc = substr($esc, 0, 16);</span>
+<span class="c">;</span>
+<span class="c">; Can the cut leave an unfinished escape that eats the closing quote?</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> name String)
+(<span class="k">define-fun</span> escaped () String
+  (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> name <span class="s">&quot;\u{5c}&quot;</span> <span class="s">&quot;\u{5c}\u{5c}&quot;</span>) <span class="s">&quot;&#x27;&quot;</span> <span class="s">&quot;\u{5c}&#x27;&quot;</span>))
+(<span class="k">define-fun</span> cut () String (<span class="f">str.substr</span> escaped 0 16))
+(<span class="k">assert</span> (not (<span class="f">str.in_re</span> cut (<span class="f">re.from_ecma2020</span> <span class="s">&#x27;([^\x27\\]|\\.)*&#x27;</span>))))
+(<span class="k">assert</span> (<span class="f">str.in_re</span> name (<span class="f">re.*</span> (<span class="f">re.union</span> (<span class="f">re.range</span> <span class="s">&quot;a&quot;</span> <span class="s">&quot;z&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;&#x27;&quot;</span>)))))  <span class="c">; only letters and quotes</span>
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=ZVNRaxsxDP4rwhRyDnfhGtgGCaWMscFgL6OP8xZUR5cc9dmd7cvadf3vk3xtsnb34LOk75P8SfaDOqjVea1s2JJaqTV8TBZve7-DPoEPv8CGGMnmGq7HDHlPQAKgLRzQjSQoK4EAXZ8B4fxtY_cY0WaKxq-Z7sbBQxUiB13Yges91VBMi5bz3dC9hjl2TJhPybn6irlCBzhjF1xAynET6dahpcqomVE1GGX4K9uXUXGfAM_WmceBtH6VdrxmbiVWDW3Nxy8AwXxAX_SKPEd4IGDH6Lve92nP-qc-MAQzEOY0gV1I0ryfY8h0aXyVKDcsu7fw9dPm6svn95qdW7IOIzU2-JRBzgVXOTJvCnIJarrRH1td6ae48QAVH3jxJHaDzv3vKAlF_Pjwxj4a9c_-2aWhNPEUYUO_qi7Cj5WnKlO7judqpV_CwpQoMtqHPAF7z_OYMkRadDEMG7IDLttlC7Pq2w9j7pbvZDDf_8i60POZ1i9SnbIUOZJmXtbR98GXXUS_E6FYhPwWVYWWg9CKQEmqAdYQvLvnMWa-ZYkHuZ0mlLgg30F70yTMUn3H4xr4KTg2VK2G8jaSWrW1yrzn3x2_EvX4Fw" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+  </section>
+  <section class="outro">
+    <h2>Why a string solver?</h2>
+    <p>Fuzzers and test suites try inputs one at a time, but the inputs above are rare, such as
+    <code>....//.</code> or a tab between two slashes. A solver reasons about all strings at once.
+    Its exploits are short and easy to read, and its unsat answers are proofs for every input. Z3-Noodler
+    represents the possible values of each string variable by an automaton. This is why
+    <code>replace_all</code>, regex membership, case conversion and lengths can all appear in the same
+    query. The same technique is used in symbolic execution, in analysis of cloud access policies and
+    in test generation.</p>
+    <p>Want to try it on your own code? <a href="https://github.com/VeriFIT/z3-noodler/releases/latest">Download
+    a release</a>, open the <a href="https://verifit.github.io/z3-noodler/playground/">playground</a> or read
+    the <a href="https://verifit.github.io/z3-noodler/">documentation</a>. All queries are in
+    <a href="https://github.com/ondrik/noodler-demo/tree/main/cases">cases/</a>.</p>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">Results from Z3-Noodler 5.1.0 (native build, <code>model=true</code>).
+  Source of this page: <a href="https://github.com/ondrik/noodler-demo">ondrik/noodler-demo</a>.</div>
+</footer>
+</body>
+</html>
