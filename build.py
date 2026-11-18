@@ -100,6 +100,40 @@ every string. The proof covers the interplay of <code>lstrip</code>, tab and new
         ],
     },
     {
+        "id": "cpython-ipaddress",
+        "group": "real",
+        "title": "CPython: SSRF through octal octets in ipaddress",
+        "tag": "CVE-2021-29921",
+        "intro": """An SSRF guard checks <code>ipaddress.ip_address(host).is_private</code> before the
+server connects to a host. Python reads every octet as decimal, but the C library that opens the
+connection (<code>inet_aton</code>, behind <code>getaddrinfo</code>) reads an octet with a leading
+<code>0</code> as <em>octal</em>, so <code>010</code> is 10 for Python and 8 for C
+(<a href="https://nvd.nist.gov/vuln/detail/CVE-2021-29921">CVE-2021-29921</a>,
+<a href="https://github.com/python/cpython/issues/80565">bpo-36384</a>). Both readings are written
+with Z3-Noodler's <code>str.to_int</code>, with the octal value computed from the individual digits.""",
+        "steps": [
+            {
+                "case": "ipaddress-3.9.4",
+                "label": "CPython 3.9.4",
+                "lang": "python · Lib/ipaddress.py",
+                "code": 'if not (octet_str.isascii() and octet_str.isdigit()):\n    raise ValueError(msg % octet_str)\nif len(octet_str) > 3:\n    raise ValueError(msg % octet_str)\noctet_int = int(octet_str, 10)\nif octet_int > 255:\n    raise ValueError("Octet %d (> 255) not permitted" % octet_int)',
+                "show": ["host"],
+                "after": """Python 3.9.4 sees the public address 12.0.70.100, but the C library connects to
+10.0.56.100 in a private network. We checked the C side with <code>socket.inet_aton</code>, which
+returns exactly that. Python's three-character limit rules out the well-known <code>0177.0.0.1</code>,
+but the solver needs no such trick: it finds the private range that the limit still allows.""",
+            },
+            {
+                "case": "ipaddress-3.9.5",
+                "label": "CPython 3.9.5: reject leading zeros",
+                "lang": "python · Lib/ipaddress.py",
+                "code": "# Handle leading zeros as strict as glibc's inet_pton()\n# See security bug bpo-36384\nif octet_str != '0' and octet_str[0] == '0':\n    raise ValueError(\"Leading zeros are not permitted in %r\" % octet_str)",
+                "after": """Unsat: Python and the C library now agree on every address that Python
+accepts. The proof combines regular constraints, string positions and string-to-integer conversion.""",
+            },
+        ],
+    },
+    {
         "id": "path-traversal",
         "group": "pattern",
         "title": "Path traversal through a one-pass filter",

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Finding bugs with Z3-Noodler</title>
-<meta name="description" content="Real CVEs (Jinja2, CPython) and classic bug patterns (path traversal, XSS, open redirect, SSRF, SQL injection) found or proved absent with the Z3-Noodler string solver.">
+<meta name="description" content="Real CVEs (Jinja2, CPython urllib and ipaddress) and classic bug patterns (path traversal, XSS, open redirect, SSRF, SQL injection) found or proved absent with the Z3-Noodler string solver.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -60,8 +60,8 @@
   <section class="part" id="real">
     <p class="part-label">Part 1</p>
     <h2 class="part-title">Real vulnerabilities</h2>
-    <p class="intro">Two CVEs in widely used Python code, with the code taken from the released versions.
-    In both, the first fix (or the code before it) misses a case. Z3-Noodler finds the missed input
+    <p class="intro">Three CVEs in widely used Python code, with the code taken from the released versions.
+    In each, the vulnerable version misses a case. Z3-Noodler finds the missed input
     from a short query within seconds, and proves the final fix.</p>
   </section>
 {{REAL}}

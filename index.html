@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Finding bugs with Z3-Noodler</title>
-<meta name="description" content="Real CVEs (Jinja2, CPython) and classic bug patterns (path traversal, XSS, open redirect, SSRF, SQL injection) found or proved absent with the Z3-Noodler string solver.">
+<meta name="description" content="Real CVEs (Jinja2, CPython urllib and ipaddress) and classic bug patterns (path traversal, XSS, open redirect, SSRF, SQL injection) found or proved absent with the Z3-Noodler string solver.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -21,10 +21,10 @@
     exists. A <b>sat</b> answer comes with a concrete exploit. An <b>unsat</b> answer is a proof that
     no input works.</p>
     <div class="stats">
-      <div><span class="big">19</span><span>queries</span></div>
-      <div><span class="big bugc">12</span><span>exploits found</span></div>
-      <div><span class="big safec">7</span><span>fixes proved</span></div>
-      <div><span class="big">≤ 2.98 s</span><span>per query</span></div>
+      <div><span class="big">21</span><span>queries</span></div>
+      <div><span class="big bugc">13</span><span>exploits found</span></div>
+      <div><span class="big safec">8</span><span>fixes proved</span></div>
+      <div><span class="big">≤ 3.09 s</span><span>per query</span></div>
     </div>
   </div>
 </header>
@@ -50,6 +50,7 @@
       <ol>
 <li><a href="#jinja2-xmlattr">Jinja2: HTML attribute injection through xmlattr</a> <span class="cwe">CVE-2024-22195 · CVE-2024-34064</span></li>
 <li><a href="#cpython-urlsplit">CPython: blocklist bypass in urllib.parse.urlsplit</a> <span class="cwe">CVE-2023-24329</span></li>
+<li><a href="#cpython-ipaddress">CPython: SSRF through octal octets in ipaddress</a> <span class="cwe">CVE-2021-29921</span></li>
       </ol>
       <div class="toc-group">Classic bug patterns</div>
       <ol>
@@ -65,8 +66,8 @@
   <section class="part" id="real">
     <p class="part-label">Part 1</p>
     <h2 class="part-title">Real vulnerabilities</h2>
-    <p class="intro">Two CVEs in widely used Python code, with the code taken from the released versions.
-    In both, the first fix (or the code before it) misses a case. Z3-Noodler finds the missed input
+    <p class="intro">Three CVEs in widely used Python code, with the code taken from the released versions.
+    In each, the vulnerable version misses a case. Z3-Noodler finds the missed input
     from a short query within seconds, and proves the final fix.</p>
   </section>
 
@@ -185,7 +186,7 @@ if _attr_key_re.search(key) is not None:
     raise ValueError(f<span class="s">&quot;Invalid character in attribute name: {key!r}&quot;</span>)</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="pane-label">Z3-Noodler · 0.04 s</div>
           <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
         </div>
       </div>
@@ -252,7 +253,7 @@ if i &gt; 0 and url[0].isascii() and url[0].isalpha():
         scheme, url = url[:i].lower(), url[i+1:]</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 1.84 s</div>
+          <div class="pane-label">Z3-Noodler · 1.94 s</div>
           <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">url</span> = <span class="s">&quot;\u{0}JAVASCRIPT:alert(1)&quot;</span></div></div></div>
         </div>
       </div>
@@ -323,7 +324,7 @@ for b in _UNSAFE_URL_BYTES_TO_REMOVE:
     ...</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 2.98 s</div>
+          <div class="pane-label">Z3-Noodler · 3.09 s</div>
           <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
         </div>
       </div>
@@ -371,6 +372,146 @@ every string. The proof covers the interplay of <code>lstrip</code>, tab and new
 </code></pre>
       </details>
       <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=nVVtb9MwEP4rp_AlYW3UCb6sFUKllBdprKMtIFAky03cNsyzK9tpB4j_zp2d0qQrDOEPeTnfPb7Xxz-ibdQ_70S5LkTUjwYwuv7m1lrBk_T8PH3aAbcWsCzv-lAZaTeydPhnrAPrTLmxIAUvSrWCUQ9yrZzR0gJXRaYGYDc8F7YDsrwRHubTm-H802v4ML1Ea1TipoBCC5uiNhkAnQHP6JlKjx-zYMNGPTaaXM2nk0s2mbLZ9XA0ToLJUhtYQKmAfbiaDV-NGcKzF5_n4xmbT9h0_G7ycdyHNE3Br0fALSwEWon61LhSljs8llxcSJ3fyBLjU3oHVgjrxTZfi9sQxMLonRXG76ELsRWuK_WqzOH9Kza7fDskYSFyyY3oYkoQiqKaYThqFfaWpRLdZaXAiFu9FczxhYU4tnulpP6AwxpAYfQGssx18GHooTIFEGOaUiM2ElPNuJT_ILCQRVlW_bj4mUX0GSW1oDgW8N-CI79DOpheotfVX7wOnjcSuOHGAZrte8mHIIXz0XtPbbXAF1TQC_-lKsQdWaAjfXSnlyTkDSHHpRMQYx8FTWo_Xiq7V621DqvGYwbdgdiI9OzMvypVYr_Tl-FqJdCa-7i_Uyaa4qEXfwn5gAcXmT7-3xNa4p4XX5yI6V-Wj9tpijuLzjx2U9K9J0kpwkOeWyBS76j5m1uhQ45aJO8xbZinAIgTmIrVJW-ngDqsFzoMQkoHUE_9gUwAp9uDJP2aHIhwACtnhMVZoKfnEJxX4iTqr13p1qCVuDeH3rQ5iM1Nj3TY5BaHHPvSs1GIHg_1CKQZ4t0rHRrLK4TCNzLQ1iZPGyb-4Lodm1lDCY5rKMMA5g3qiU8QafIAIe_ZmLAC7SCzEe_QnhI7iYVDrqY_gwgt2su5FV2cLKFs6cqtkN-IseElpR3vA4Pl5vCVb7nN0QXX9465NZJqm1Jp0N3a6Gq1fn6UvY3B1qE5z6IGEHZGu-_iJmPWdTguhK2WeyguURqfJ4iDVTzNYtSdNXHFDV47cZAnM1-t1hWFV8u96j7bgzfD2U_JnzQL7vhDOttFGwvl-U0X7y_8iTrRrb_LbdTvdSKH3_i6w1s9-vkL" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+  </section>
+
+  <section class="story" id="cpython-ipaddress">
+    <div class="story-head">
+      <span class="cwe">CVE-2021-29921</span>
+      <h2><a href="#cpython-ipaddress">CPython: SSRF through octal octets in ipaddress</a></h2>
+    </div>
+    <p class="intro">An SSRF guard checks <code>ipaddress.ip_address(host).is_private</code> before the
+server connects to a host. Python reads every octet as decimal, but the C library that opens the
+connection (<code>inet_aton</code>, behind <code>getaddrinfo</code>) reads an octet with a leading
+<code>0</code> as <em>octal</em>, so <code>010</code> is 10 for Python and 8 for C
+(<a href="https://nvd.nist.gov/vuln/detail/CVE-2021-29921">CVE-2021-29921</a>,
+<a href="https://github.com/python/cpython/issues/80565">bpo-36384</a>). Both readings are written
+with Z3-Noodler's <code>str.to_int</code>, with the octal value computed from the individual digits.</p>
+    
+    <div class="step">
+      <div class="step-head"><span class="num">1</span><h3>CPython 3.9.4</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python · Lib/ipaddress.py</div>
+          <pre class="src"><code>if not (octet_str.isascii() and octet_str.isdigit()):
+    raise ValueError(msg % octet_str)
+if len(octet_str) &gt; 3:
+    raise ValueError(msg % octet_str)
+octet_int = int(octet_str, 10)
+if octet_int &gt; 255:
+    raise ValueError(<span class="s">&quot;Octet %d (&gt; 255) not permitted&quot;</span> % octet_int)</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.47 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">host</span> = <span class="s">&quot;012.00.070.100&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">Python 3.9.4 sees the public address 12.0.70.100, but the C library connects to
+10.0.56.100 in a private network. We checked the C side with <code>socket.inet_aton</code>, which
+returns exactly that. Python's three-character limit rules out the well-known <code>0177.0.0.1</code>,
+but the solver needs no such trick: it finds the private range that the limit still allows.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/ipaddress-3.9.4.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; CPython 3.9.4, ipaddress (CVE-2021-29921).  An SSRF guard:</span>
+<span class="c">;</span>
+<span class="c">;   def is_allowed(host):</span>
+<span class="c">;       return not ipaddress.ip_address(host).is_private</span>
+<span class="c">;   ...</span>
+<span class="c">;   if is_allowed(host): urllib.request.urlopen(f&quot;http://{host}/&quot;)</span>
+<span class="c">;</span>
+<span class="c">; ipaddress reads every octet as decimal, but the C library that opens the</span>
+<span class="c">; connection (inet_aton) reads an octet with a leading 0 as octal.</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> o1 String) (<span class="k">declare-const</span> o2 String) (<span class="k">declare-const</span> o3 String) (<span class="k">declare-const</span> o4 String)
+(<span class="k">declare-const</span> host String)
+(<span class="k">assert</span> (= host (<span class="f">str.++</span> o1 <span class="s">&quot;.&quot;</span> o2 <span class="s">&quot;.&quot;</span> o3 <span class="s">&quot;.&quot;</span> o4)))
+
+<span class="c">; ipaddress._parse_octet: 1-3 ASCII digits, value at most 255</span>
+(<span class="k">define-fun</span> py_octet_ok ((o String)) Bool
+  (and (<span class="f">str.in_re</span> o ((_ <span class="f">re.loop</span> 1 3) (<span class="f">re.range</span> <span class="s">&quot;0&quot;</span> <span class="s">&quot;9&quot;</span>))) (&lt;= (<span class="f">str.to_int</span> o) 255)))
+
+<span class="c">; inet_aton (glibc, used by getaddrinfo): a leading 0 means octal</span>
+(<span class="k">define-fun</span> digit ((o String) (i Int)) Int (<span class="f">str.to_int</span> (<span class="f">str.at</span> o i)))
+(<span class="k">define-fun</span> aton_octet ((o String)) Int
+  (ite (and (<span class="f">str.prefixof</span> <span class="s">&quot;0&quot;</span> o) (&gt; (<span class="f">str.len</span> o) 1))
+       (ite (= (<span class="f">str.len</span> o) 2) (digit o 1) (+ (* 8 (digit o 1)) (digit o 2)))
+       (<span class="f">str.to_int</span> o)))
+(<span class="k">define-fun</span> aton_ok ((o String)) Bool
+  (or (not (<span class="f">str.prefixof</span> <span class="s">&quot;0&quot;</span> o)) (<span class="f">str.in_re</span> o (<span class="f">re.+</span> (<span class="f">re.range</span> <span class="s">&quot;0&quot;</span> <span class="s">&quot;7&quot;</span>)))))
+
+<span class="c">; RFC 1918 private and loopback ranges</span>
+(<span class="k">define-fun</span> private ((a Int) (b Int)) Bool
+  (or (= a 10) (= a 127) (and (= a 172) (&lt;= 16 b 31)) (and (= a 192) (= b 168))))
+
+(<span class="k">assert</span> (and (py_octet_ok o1) (py_octet_ok o2) (py_octet_ok o3) (py_octet_ok o4)))
+(<span class="k">assert</span> (and (aton_ok o1) (aton_ok o2) (aton_ok o3) (aton_ok o4)))
+<span class="c">; Python thinks the address is public, the C library connects to a private one.</span>
+(<span class="k">assert</span> (not (private (<span class="f">str.to_int</span> o1) (<span class="f">str.to_int</span> o2))))
+(<span class="k">assert</span> (private (aton_octet o1) (aton_octet o2)))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=dVVRb9owEP4rpzw5A1KStGuhY1KHVglpD1uR9oQUmcQQi2BntkOHqv73nZ0EEkarqvX57j5_993ZefMO3jQceqnMmDf1HmH-82hyKSAOJsHtEHhJs0wxrYHMf38fReMoHEWTSRT6AcCTgOXy5Rm2FVXZdCUe8RcAMrYBrhNaFPKVZSSX2vjT2mV_FDOVEiCkOaMHvEyaZR0fIECp-IEaVmcGQVAv-BVwqFRR8HWg2J-KaROgKUsmyGbl5caU05ubNxv4frPy_IbmuTDFaKaBHZg6gkwNM0A11pDyPS2GsK4MmJzBHPAARTHG5NSAhdfWYbFSKQRLDUfZCBfMJNRI4TfAVDSor9zkQKHAXS62MLbHoIcWWBjRzIwKueUp_HpOlj8WT8iTIImCKjZCfI1HhrA0ClN9uPREH3riDz23ree_g6xUHSfVmikDZFY7iDYqGAwsnZUXrDx7erOI28Wt72NmT-YgKanSLHFaTCEcxfC0nC8WkPEtN3oIB1pUDFDavT0lurtzvDao52hTCSiPdWoid0CIbPn58E3KYiUACBVZTY6LRDGQGJZgD4JCyhJCiFECtBQVW4Y8x8hz5U1wIBCDfJnVqUYmXKA4viVwLqLtKZAtTkE6hEqzDNZH2DJj6-NiI3EKu83dMyqa_vYLcfV2S8CZgYUwSAP_9mi4tR024I5LF8bSqRXpy4EYTg1uWEeSUmHmX7lpCsf6yNfaUzBhzdDiNxe0zp31_JEdIMdcYiyQAZBP8NDd6wREfhetp-v1Mj5qqVRA7DtxvQb_ot3Y3cGVHt-7Hre9fHmeQzgJH6B5XcBqZEdkTdMduEx9MXlNICHU9QnIuulXj-cM2x-O_WYR3fuN_M68j-ohCz_DGmIn1tk5iVzWGr0PLdHTrXNh3eGXVv7eRnS5EV9u1Pexj9kq7_BORtQ14q5RYzxC830wORc79wJC-5ByDWW1Ljjej_6L2byPGC2x3lZPKVjQIeX6fNK6OzSh37cjv1_OKalzJzpV1XY9kyTNWbobaWqsgbd3tMcPX4GGN_T27kuovel46Blc47-_-E303v8B" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">2</span><h3>CPython 3.9.5: reject leading zeros</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python · Lib/ipaddress.py</div>
+          <pre class="src"><code><span class="c"># Handle leading zeros as strict as glibc&#x27;s inet_pton()</span>
+<span class="c"># See security bug bpo-36384</span>
+if octet_str != <span class="s">&#x27;0&#x27;</span> and octet_str[0] == <span class="s">&#x27;0&#x27;</span>:
+    raise ValueError(<span class="s">&quot;Leading zeros are not permitted in %r&quot;</span> % octet_str)</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.04 s</div>
+          <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
+        </div>
+      </div>
+      <p class="after">Unsat: Python and the C library now agree on every address that Python
+accepts. The proof combines regular constraints, string positions and string-to-integer conversion.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/ipaddress-3.9.5.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; CPython 3.9.5, the fix: leading zeros are rejected.</span>
+<span class="c">;</span>
+<span class="c">;   if octet_str != &#x27;0&#x27; and octet_str[0] == &#x27;0&#x27;:</span>
+<span class="c">;       raise ValueError(&quot;Leading zeros are not permitted in %r&quot; % octet_str)</span>
+<span class="c">;</span>
+<span class="c">; (unsat = Python and the C library agree on every address Python accepts)</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> o1 String) (<span class="k">declare-const</span> o2 String) (<span class="k">declare-const</span> o3 String) (<span class="k">declare-const</span> o4 String)
+(<span class="k">declare-const</span> host String)
+(<span class="k">assert</span> (= host (<span class="f">str.++</span> o1 <span class="s">&quot;.&quot;</span> o2 <span class="s">&quot;.&quot;</span> o3 <span class="s">&quot;.&quot;</span> o4)))
+
+<span class="c">; ipaddress._parse_octet: 1-3 ASCII digits, value at most 255</span>
+(<span class="k">define-fun</span> py_octet_ok ((o String)) Bool
+  (and (<span class="f">str.in_re</span> o ((_ <span class="f">re.loop</span> 1 3) (<span class="f">re.range</span> <span class="s">&quot;0&quot;</span> <span class="s">&quot;9&quot;</span>))) (&lt;= (<span class="f">str.to_int</span> o) 255)))
+
+<span class="c">; inet_aton (glibc, used by getaddrinfo): a leading 0 means octal</span>
+(<span class="k">define-fun</span> digit ((o String) (i Int)) Int (<span class="f">str.to_int</span> (<span class="f">str.at</span> o i)))
+(<span class="k">define-fun</span> aton_octet ((o String)) Int
+  (ite (and (<span class="f">str.prefixof</span> <span class="s">&quot;0&quot;</span> o) (&gt; (<span class="f">str.len</span> o) 1))
+       (ite (= (<span class="f">str.len</span> o) 2) (digit o 1) (+ (* 8 (digit o 1)) (digit o 2)))
+       (<span class="f">str.to_int</span> o)))
+(<span class="k">define-fun</span> aton_ok ((o String)) Bool
+  (or (not (<span class="f">str.prefixof</span> <span class="s">&quot;0&quot;</span> o)) (<span class="f">str.in_re</span> o (<span class="f">re.+</span> (<span class="f">re.range</span> <span class="s">&quot;0&quot;</span> <span class="s">&quot;7&quot;</span>)))))
+
+<span class="c">; RFC 1918 private and loopback ranges</span>
+(<span class="k">define-fun</span> private ((a Int) (b Int)) Bool
+  (or (= a 10) (= a 127) (and (= a 172) (&lt;= 16 b 31)) (and (= a 192) (= b 168))))
+
+(<span class="k">assert</span> (and (py_octet_ok o1) (py_octet_ok o2) (py_octet_ok o3) (py_octet_ok o4)))
+(<span class="k">assert</span> (and (aton_ok o1) (aton_ok o2) (aton_ok o3) (aton_ok o4)))
+<span class="c">; Python thinks the address is public, the C library connects to a private one.</span>
+(<span class="k">assert</span> (not (private (<span class="f">str.to_int</span> o1) (<span class="f">str.to_int</span> o2))))
+(<span class="k">assert</span> (private (aton_octet o1) (aton_octet o2)))
+(<span class="k">define-fun</span> no_leading_zero ((o String)) Bool (or (= o <span class="s">&quot;0&quot;</span>) (not (<span class="f">str.prefixof</span> <span class="s">&quot;0&quot;</span> o))))
+(<span class="k">assert</span> (and (no_leading_zero o1) (no_leading_zero o2) (no_leading_zero o3) (no_leading_zero o4)))
+(<span class="k">check-sat</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=fVVhb9owEP0rt0hVnQERSdq10DFpQ6uE1A_bKu3LmCKTGPAIdmQbVDbtv-_sJJAEOoQgd-c7v3vv7Pzx9t447HupzJg39h5g-uVg1lJAHIyC2z6YNYMlfxlDzmjGxQp-MyU1UMVAsV8sNSwL5uIBvwDAlyDRYxJtFLyZwPXwGqjITs4fw58wcf5xmWE_inLN4DvNd-yzUlKRufd0tpmQBgqmttzgjsAFXKm5B1en0n6FguyEpgYmUPVh97dNTCHnC0XVAehKMQYYYntmzSxTTOvj-jRlhdFYjmhmBrlc8RS-PibPT7OP1pmxNEdAg1QKbUCG8GwUQvWhG4lejcSvRm7qyNlGa4k_pyDVmikDZFIGCBIQ9HoWztwLkBjcvXqI64cb38dMSxEvqp6DpKBKs8SROIZwEMPH5-lsBhlfcaP7sLeiANK5tbtEt7cO15ILNljuBBSHMjWRGyBE1vh8-CRlPhcAxLLvwHGRoIoSlyU4OEEuZQEhxEgBWoqKFUOcQ8Q590ZzD6ECeT8pU41MuEByfAvg1ITAfalBxcgKlU37sNM4GYsDrJix_XGxlP4Y6HFyh7BlVGg7MjRvN-L6bbYAhMNMGISBvy0Y7hkZkcAdlmYZC6dkpE0H1nBscMMalBQKM1_ksmoc-yMfykjOhDVDW786JGXupBWP7AA55BLXAukBeQv3TV9jQeQ3q7V4vdzGa5JKBcSexss9-B25Ud3eBY3vnMa1lt8epxCOwnsoFN9TbNRyZEdkQdMNuEzdmbxqISHU6QRkUenVwjlB-cOhXz1Ed35FvzPvonLIwnewgNiRdQqOIpe1wOh9DfR46tyy5vBLS3_LEXUdcddRnsd2zZp5V-9oRE0jbhpljYf67jJrLjbaXXf1rcY1FLtFztN-5xbEa0Xg9Y2rJfZb8ykFCxqgnM5HrptDE_ptO_Lb7RyTGmei0VVpR2ejJ2RSHdfE3v3nI1jrKstR8v87i-cEd-s7SGfO6JIzvuSsREzXLN0M8L2Dhtf3tu6Vqr3xsO8ZfMa_F3y5en__AQ" target="_blank" rel="noopener">Run in the playground ↗</a>
     </div>
   </section>
   <section class="part" id="patterns">
@@ -507,7 +648,7 @@ other users. The browser reads tag names case-insensitively, so the encoding che
 }</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.16 s</div>
+          <div class="pane-label">Z3-Noodler · 0.14 s</div>
           <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">comment</span> = <span class="s">&quot;&lt;&lt;script&gt;SCRIPT&gt;&lt;&lt;script&gt;&quot;</span></div></div></div>
         </div>
       </div>
@@ -709,7 +850,7 @@ def is_safe_redirect(url):
     return SAFE.fullmatch(url) is not None</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.04 s</div>
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
           <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
         </div>
       </div>
@@ -760,7 +901,7 @@ if (!ALLOWED.test(url)) throw new Error(<span class="s">&quot;forbidden host&quo
 await fetch(url);</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.04 s</div>
+          <div class="pane-label">Z3-Noodler · 0.05 s</div>
           <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">host</span> = <span class="s">&quot;api-example.com&quot;</span></div><div><span class="var">url</span> = <span class="s">&quot;https://api-example.com/&quot;</span></div><div><span class="var">path</span> = <span class="s">&quot;&quot;</span></div></div></div>
         </div>
       </div>
@@ -799,7 +940,7 @@ can register <code>api-example.com</code> and the check lets it through.</p>
           <pre class="src"><code>const ALLOWED = /^https:\/\/(www|api)\.example\.com\<span class="c">//;</span></code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="pane-label">Z3-Noodler · 0.04 s</div>
           <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
         </div>
       </div>
@@ -883,7 +1024,7 @@ backslash followed by a bare quote. We also required the payload to end with
           <pre class="src"><code>$esc = str_replace(<span class="s">&quot;&#x27;&quot;</span>, <span class="s">&quot;\\&#x27;&quot;</span>, str_replace(<span class="s">&quot;\\&quot;</span>, <span class="s">&quot;\\\\&quot;</span>, $name));</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
           <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
         </div>
       </div>
@@ -917,7 +1058,7 @@ the better fix.)</p>
 $esc = substr($esc, 0, 16);   <span class="c">// fit the column</span></code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.04 s</div>
+          <div class="pane-label">Z3-Noodler · 0.05 s</div>
           <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">name</span> = <span class="s">&quot;&#x27;&#x27;&#x27;&#x27;&#x27;&#x27;&#x27;a&#x27;a&quot;</span></div></div></div>
         </div>
       </div>
