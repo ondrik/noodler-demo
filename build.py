@@ -16,7 +16,92 @@ PLAYGROUND = "https://verifit.github.io/z3-noodler/playground/"
 # Each story is a bug class; each step is a version of the code checked by the solver.
 STORIES = [
     {
+        "id": "jinja2-xmlattr",
+        "group": "real",
+        "title": "Jinja2: HTML attribute injection through xmlattr",
+        "tag": "CVE-2024-22195 · CVE-2024-34064",
+        "intro": """Jinja2's <code>xmlattr</code> filter turns a dictionary into HTML attributes:
+<code>&lt;div{{ {key: value}|xmlattr }}&gt;</code>. Values are HTML-escaped, but if an application
+passes a user-chosen <em>key</em>, the key itself can close the attribute name and start a new one,
+such as an event handler. This was reported as
+<a href="https://github.com/pallets/jinja/security/advisories/GHSA-h5c8-rqwp-cp95">CVE-2024-22195</a>.
+The fix in 3.1.3 turned out to be incomplete:
+<a href="https://github.com/pallets/jinja/security/advisories/GHSA-h75v-3vvj-5mfj">CVE-2024-34064</a>.
+The encoding below follows the real code: <code>markupsafe.escape</code> as five chained
+<code>replace_all</code>s and the validation regexes copied from each release.""",
+        "steps": [
+            {
+                "case": "jinja-3.1.2",
+                "label": "Jinja2 3.1.2: no check on keys",
+                "lang": "python · jinja2/filters.py",
+                "code": 'rv = " ".join(\n    f\'{escape(key)}="{escape(value)}"\'\n    for key, value in d.items()\n    if value is not None and not isinstance(value, Undefined)\n)',
+                "show": ["key"],
+                "after": """A tab or a space in the key starts a new attribute: Jinja2 3.1.2 renders
+<code>&lt;div</code>, a tab, and <code>onmouseover="…"&gt;</code>. We ran the key the solver found through the real Jinja2
+3.1.2 release, and it produced the injected attribute.""",
+            },
+            {
+                "case": "jinja-3.1.3",
+                "label": "Jinja2 3.1.3: reject white space",
+                "lang": "python · jinja2/filters.py",
+                "code": '_space_re = re.compile(r"\\s", flags=re.ASCII)\n...\nif _space_re.search(key) is not None:\n    raise ValueError(f"Spaces are not allowed in attributes: \'{key}\'")',
+                "show": ["key"],
+                "after": """White space is not the only character that ends an attribute name in HTML.
+The solver goes around the check with <code>/onmouseover</code>, and Jinja2 3.1.3 really renders
+<code>&lt;div /onmouseover="…"&gt;</code>, which a browser parses as an <code>onmouseover</code>
+attribute. This is the bypass that became CVE-2024-34064.""",
+            },
+            {
+                "case": "jinja-3.1.4",
+                "label": "Jinja2 3.1.4: reject every attribute-name terminator",
+                "lang": "python · jinja2/filters.py",
+                "code": '_attr_key_re = re.compile(r"[\\s/>=]", flags=re.ASCII)\n...\nif _attr_key_re.search(key) is not None:\n    raise ValueError(f"Invalid character in attribute name: {key!r}")',
+                "after": """Unsat: the current check, together with the escaping, blocks every
+key that would inject an attribute. Before release, a query like this one would have found the gap
+in the first fix.""",
+            },
+        ],
+    },
+    {
+        "id": "cpython-urlsplit",
+        "group": "real",
+        "title": "CPython: blocklist bypass in urllib.parse.urlsplit",
+        "tag": "CVE-2023-24329",
+        "intro": """Applications often reject dangerous links by checking
+<code>urlsplit(url).scheme</code>. Browsers follow the
+<a href="https://url.spec.whatwg.org/">WHATWG URL standard</a>, which first strips leading control
+characters and spaces, but <code>urlsplit</code> before Python 3.11.4 did not. So Python and the
+browser could read a different scheme from the same URL
+(<a href="https://nvd.nist.gov/vuln/detail/CVE-2023-24329">CVE-2023-24329</a>,
+<a href="https://github.com/python/cpython/issues/102153">gh-102153</a>). The encoding models
+<code>urlsplit</code>'s scheme parsing from the CPython sources and the browser's parsing from the
+standard, and asks if they can disagree on <code>javascript:</code>.""",
+        "steps": [
+            {
+                "case": "cpython-3.11.2",
+                "label": "CPython 3.11.2",
+                "lang": "python · Lib/urllib/parse.py",
+                "code": 'for b in _UNSAFE_URL_BYTES_TO_REMOVE:     # "\\t", "\\r", "\\n"\n    url = url.replace(b, "")\ni = url.find(\':\')\nif i > 0 and url[0].isascii() and url[0].isalpha():\n    for c in url[:i]:\n        if c not in scheme_chars:\n            break\n    else:\n        scheme, url = url[:i].lower(), url[i+1:]',
+                "show": ["url"],
+                "after": """A single NUL byte in front of the URL is enough. <code>urlsplit</code>
+sees no scheme, so the blocklist passes the URL, and the browser strips the NUL and runs
+<code>javascript:</code>. Upper case is no obstacle either: the solver mixes it in because both
+sides compare case-insensitively.""",
+            },
+            {
+                "case": "cpython-3.11.4",
+                "label": "CPython 3.11.4: strip like the browser",
+                "lang": "python · Lib/urllib/parse.py",
+                "code": '# Only lstrip url as some applications rely on preserving trailing space.\nurl = url.lstrip(_WHATWG_C0_CONTROL_OR_SPACE)\nscheme = scheme.strip(_WHATWG_C0_CONTROL_OR_SPACE)\nfor b in _UNSAFE_URL_BYTES_TO_REMOVE:\n    ...',
+                "after": """Unsat: after the fix, Python and the browser agree on the scheme for
+every string. The proof covers the interplay of <code>lstrip</code>, tab and newline removal,
+<code>find</code>, slicing and lower-casing.""",
+            },
+        ],
+    },
+    {
         "id": "path-traversal",
+        "group": "pattern",
         "title": "Path traversal through a one-pass filter",
         "tag": "CWE-22",
         "intro": """A file-download endpoint deletes <code>../</code> from the requested name so that it
@@ -52,6 +137,7 @@ the ones a test suite happens to try.""",
     },
     {
         "id": "xss",
+        "group": "pattern",
         "title": "Cross-site scripting through tag stripping",
         "tag": "CWE-79",
         "intro": """A comment form deletes <code>&lt;script&gt;</code> tags before it shows comments to
@@ -85,6 +171,7 @@ lower-casing and the replacement together, and still finds an attack.""",
     },
     {
         "id": "open-redirect",
+        "group": "pattern",
         "title": "Open redirect after login",
         "tag": "CWE-601",
         "intro": """After login, the app redirects to <code>?next=&lt;url&gt;</code>. To keep users on the
@@ -122,6 +209,7 @@ combination of the browser's rewrites.""",
     },
     {
         "id": "url-allowlist",
+        "group": "pattern",
         "title": "Server-side request forgery through an unescaped dot",
         "tag": "CWE-918",
         "intro": """A webhook may only call the company's own API servers, and a regular expression
@@ -148,6 +236,7 @@ can register <code>api-example.com</code> and the check lets it through.""",
     },
     {
         "id": "sql",
+        "group": "pattern",
         "title": "SQL injection through hand-made escaping",
         "tag": "CWE-89",
         "intro": """A query is built by escaping quotes in user input. The encoding asks if the escaped
@@ -247,6 +336,8 @@ def render_step(number, step, results):
     smt = (ROOT / "cases" / f"{step['case']}.smt2").read_text()
     result = results[step["case"]]
     answer, model = model_of(result["output"])
+    if "show" in step:
+        model = [(n, v) for n, v in model if n in step["show"]]
     if answer == "sat":
         badge = '<span class="verdict bug">sat · bug found</span>'
     elif answer == "unsat":
@@ -283,11 +374,12 @@ def render_step(number, step, results):
 def main():
     results_file = json.loads((ROOT / "cases" / "results.json").read_text())
     results = results_file["cases"]
-    toc, body = [], []
+    toc, body = {"real": [], "pattern": []}, {"real": [], "pattern": []}
     for story in STORIES:
-        toc.append(f'<li><a href="#{story["id"]}">{html.escape(story["title"])}</a> <span class="cwe">{story["tag"]}</span></li>')
+        group = story["group"]
+        toc[group].append(f'<li><a href="#{story["id"]}">{html.escape(story["title"])}</a> <span class="cwe">{story["tag"]}</span></li>')
         steps = "".join(render_step(i + 1, s, results) for i, s in enumerate(story["steps"]))
-        body.append(f"""
+        body[group].append(f"""
   <section class="story" id="{story['id']}">
     <div class="story-head">
       <span class="cwe">{story['tag']}</span>
@@ -303,8 +395,10 @@ def main():
     version = re.search(r"Z3 version (\S+)", results_file["solver"])
     page = (ROOT / "template.html").read_text()
     for key, value in {
-        "TOC": "\n".join(toc),
-        "STORIES": "\n".join(body),
+        "TOC_REAL": "\n".join(toc["real"]),
+        "TOC_PATTERN": "\n".join(toc["pattern"]),
+        "REAL": "\n".join(body["real"]),
+        "PATTERNS": "\n".join(body["pattern"]),
         "TOTAL": str(total),
         "FOUND": str(found),
         "PROVED": str(proved),

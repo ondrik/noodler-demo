@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Finding bugs with Z3-Noodler</title>
-<meta name="description" content="Five bug classes from real web applications (path traversal, XSS, open redirect, SSRF, SQL injection) found or proved absent with the Z3-Noodler string solver.">
+<meta name="description" content="Real CVEs (Jinja2, CPython) and classic bug patterns (path traversal, XSS, open redirect, SSRF, SQL injection) found or proved absent with the Z3-Noodler string solver.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -46,12 +46,32 @@
     <a href="https://verifit.github.io/z3-noodler/playground/">Z3-Noodler playground</a>, which runs
     the solver locally via WebAssembly, so you can change the code and try your own fix.</p>
     <nav class="toc">
+      <div class="toc-group">Real vulnerabilities</div>
       <ol>
-{{TOC}}
+{{TOC_REAL}}
+      </ol>
+      <div class="toc-group">Classic bug patterns</div>
+      <ol>
+{{TOC_PATTERN}}
       </ol>
     </nav>
   </section>
-{{STORIES}}
+
+  <section class="part" id="real">
+    <p class="part-label">Part 1</p>
+    <h2 class="part-title">Real vulnerabilities</h2>
+    <p class="intro">Two CVEs in widely used Python code, with the code taken from the released versions.
+    In both, the first fix (or the code before it) misses a case. Z3-Noodler finds the missed input
+    from a short query within seconds, and proves the final fix.</p>
+  </section>
+{{REAL}}
+  <section class="part" id="patterns">
+    <p class="part-label">Part 2</p>
+    <h2 class="part-title">Classic bug patterns</h2>
+    <p class="intro">Five bug patterns that keep coming back in security advisories, each shown
+    with the typical code, a typical incomplete fix and a sound one.</p>
+  </section>
+{{PATTERNS}}
   <section class="outro">
     <h2>Why a string solver?</h2>
     <p>Fuzzers and test suites try inputs one at a time, but the inputs above are rare, such as

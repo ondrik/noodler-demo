@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Finding bugs with Z3-Noodler</title>
-<meta name="description" content="Five bug classes from real web applications (path traversal, XSS, open redirect, SSRF, SQL injection) found or proved absent with the Z3-Noodler string solver.">
+<meta name="description" content="Real CVEs (Jinja2, CPython) and classic bug patterns (path traversal, XSS, open redirect, SSRF, SQL injection) found or proved absent with the Z3-Noodler string solver.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -21,10 +21,10 @@
     exists. A <b>sat</b> answer comes with a concrete exploit. An <b>unsat</b> answer is a proof that
     no input works.</p>
     <div class="stats">
-      <div><span class="big">14</span><span>queries</span></div>
-      <div><span class="big bugc">9</span><span>exploits found</span></div>
-      <div><span class="big safec">5</span><span>fixes proved</span></div>
-      <div><span class="big">≤ 0.25 s</span><span>per query</span></div>
+      <div><span class="big">19</span><span>queries</span></div>
+      <div><span class="big bugc">12</span><span>exploits found</span></div>
+      <div><span class="big safec">7</span><span>fixes proved</span></div>
+      <div><span class="big">≤ 2.98 s</span><span>per query</span></div>
     </div>
   </div>
 </header>
@@ -46,6 +46,12 @@
     <a href="https://verifit.github.io/z3-noodler/playground/">Z3-Noodler playground</a>, which runs
     the solver locally via WebAssembly, so you can change the code and try your own fix.</p>
     <nav class="toc">
+      <div class="toc-group">Real vulnerabilities</div>
+      <ol>
+<li><a href="#jinja2-xmlattr">Jinja2: HTML attribute injection through xmlattr</a> <span class="cwe">CVE-2024-22195 · CVE-2024-34064</span></li>
+<li><a href="#cpython-urlsplit">CPython: blocklist bypass in urllib.parse.urlsplit</a> <span class="cwe">CVE-2023-24329</span></li>
+      </ol>
+      <div class="toc-group">Classic bug patterns</div>
       <ol>
 <li><a href="#path-traversal">Path traversal through a one-pass filter</a> <span class="cwe">CWE-22</span></li>
 <li><a href="#xss">Cross-site scripting through tag stripping</a> <span class="cwe">CWE-79</span></li>
@@ -54,6 +60,324 @@
 <li><a href="#sql">SQL injection through hand-made escaping</a> <span class="cwe">CWE-89</span></li>
       </ol>
     </nav>
+  </section>
+
+  <section class="part" id="real">
+    <p class="part-label">Part 1</p>
+    <h2 class="part-title">Real vulnerabilities</h2>
+    <p class="intro">Two CVEs in widely used Python code, with the code taken from the released versions.
+    In both, the first fix (or the code before it) misses a case. Z3-Noodler finds the missed input
+    from a short query within seconds, and proves the final fix.</p>
+  </section>
+
+  <section class="story" id="jinja2-xmlattr">
+    <div class="story-head">
+      <span class="cwe">CVE-2024-22195 · CVE-2024-34064</span>
+      <h2><a href="#jinja2-xmlattr">Jinja2: HTML attribute injection through xmlattr</a></h2>
+    </div>
+    <p class="intro">Jinja2's <code>xmlattr</code> filter turns a dictionary into HTML attributes:
+<code>&lt;div{{ {key: value}|xmlattr }}&gt;</code>. Values are HTML-escaped, but if an application
+passes a user-chosen <em>key</em>, the key itself can close the attribute name and start a new one,
+such as an event handler. This was reported as
+<a href="https://github.com/pallets/jinja/security/advisories/GHSA-h5c8-rqwp-cp95">CVE-2024-22195</a>.
+The fix in 3.1.3 turned out to be incomplete:
+<a href="https://github.com/pallets/jinja/security/advisories/GHSA-h75v-3vvj-5mfj">CVE-2024-34064</a>.
+The encoding below follows the real code: <code>markupsafe.escape</code> as five chained
+<code>replace_all</code>s and the validation regexes copied from each release.</p>
+    
+    <div class="step">
+      <div class="step-head"><span class="num">1</span><h3>Jinja2 3.1.2: no check on keys</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python · jinja2/filters.py</div>
+          <pre class="src"><code>rv = <span class="s">&quot; &quot;</span>.join(
+    f<span class="s">&#x27;{escape(key)}=&quot;{escape(value)}&quot;&#x27;</span>
+    for key, value in d.items()
+    if value is not None and not isinstance(value, Undefined)
+)</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">key</span> = <span class="s">&quot;\u{9}onmouseover&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">A tab or a space in the key starts a new attribute: Jinja2 3.1.2 renders
+<code>&lt;div</code>, a tab, and <code>onmouseover="…"&gt;</code>. We ran the key the solver found through the real Jinja2
+3.1.2 release, and it produced the injected attribute.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/jinja-3.1.2.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; Jinja2 3.1.2, filter xmlattr (CVE-2024-22195):</span>
+<span class="c">;</span>
+<span class="c">;   &lt;div{{ {key: value}|xmlattr }}&gt;   renders   &lt;div key=&quot;value&quot;&gt;</span>
+<span class="c">;</span>
+<span class="c">;   rv = &quot; &quot;.join(f&#x27;{escape(key)}=&quot;{escape(value)}&quot;&#x27; for key, value in d.items() ...)</span>
+<span class="c">;</span>
+<span class="c">; The key comes from the user.</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> key String)
+(<span class="k">define-fun</span> escape ((s String)) String   <span class="c">; markupsafe.escape</span>
+  (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> s
+    <span class="s">&quot;&amp;&quot;</span> <span class="s">&quot;&amp;amp;&quot;</span>) <span class="s">&quot;&gt;&quot;</span> <span class="s">&quot;&amp;gt;&quot;</span>) <span class="s">&quot;&lt;&quot;</span> <span class="s">&quot;&amp;lt;&quot;</span>) <span class="s">&quot;\u{27}&quot;</span> <span class="s">&quot;&amp;#39;&quot;</span>) <span class="s">&quot;\u{22}&quot;</span> <span class="s">&quot;&amp;#34;&quot;</span>))
+<span class="c">; In HTML, an attribute name ends at a tab, LF, FF, space, &quot;/&quot;, &quot;=&quot; or &quot;&gt;&quot;.</span>
+<span class="c">; Can the key smuggle in a second attribute, an event handler?</span>
+(<span class="k">assert</span> (<span class="f">str.in_re</span> (escape key)
+  (<span class="f">re.++</span> <span class="f">re.all</span> (<span class="f">re.union</span> (<span class="f">str.to_re</span> <span class="s">&quot;\u{9}&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;\u{a}&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;\u{c}&quot;</span>)
+                          (<span class="f">str.to_re</span> <span class="s">&quot; &quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;/&quot;</span>))
+         (<span class="f">str.to_re</span> <span class="s">&quot;onmouseover&quot;</span>))))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=rVPRatswFP2ViwatTW21cTtGkrZjlIV1ZA-jZU-GoNrXjhpbCpJsOjz_-65sp9toHhcc5Ht8zpV0jtSxli1mEct0jmzBlvBVqmeRwCWf8SSCQlYODbzUlXDOQHD343OcXCRXcZLM5u_DRaqW9ADAdS7broNuhz8X0Iqqwf7XQdX3t8QwqHI0duICEW9SNjBTdvvax7RwAymjhz9rqYLitEObiT0GJAh7khzqQRr2KTuFQhvfLxonBqkg59JhbYMQOOfh1P1xi54Gma7RQmF0DY6gxqLhqQosurjSpczg-2rzsL7_RLogx6wSBuNMK-sG9YMzUpXjt0IqjItGwbgmCAJ7-B5OL7SnJdTC7Jq9FQXykZkqgMA6ww3uK5HhRlTVfwGs7wxk38lg4omo98uUheA9HoDSTfX1WFeHOk2bLvnQj-i7y_nfcPIKX3nYGwr3Cr48fltHIBT4mOVT4xCUqBEoaUsYCHDiKYL1KoIV_e2eVhlRn_OU-YHCBEpuWBr3Le-olZtCsnVTltUQpgCL5H_-Z5phUmxROdgKlVdoPlIewlKSbvREqo2hPKZc_NkZLDfIz87oKPLBPBobJbUaJU57ybjjee93_wYWx-HMw6Pxx3__KOBNj_PR0-N0rWpNR1S3aDzNE4Nsi9kutsL5oqRzW9P1rahgEauH-2zZ4iJijt5peKGbzfrf" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">2</span><h3>Jinja2 3.1.3: reject white space</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python · jinja2/filters.py</div>
+          <pre class="src"><code>_space_re = re.compile(<span class="s">r&quot;\s&quot;</span>, flags=re.ASCII)
+...
+if _space_re.search(key) is not None:
+    raise ValueError(f<span class="s">&quot;Spaces are not allowed in attributes: &#x27;{key}&#x27;&quot;</span>)</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">key</span> = <span class="s">&quot;/onmouseover&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">White space is not the only character that ends an attribute name in HTML.
+The solver goes around the check with <code>/onmouseover</code>, and Jinja2 3.1.3 really renders
+<code>&lt;div /onmouseover="…"&gt;</code>, which a browser parses as an <code>onmouseover</code>
+attribute. This is the bypass that became CVE-2024-34064.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/jinja-3.1.3.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; Jinja2 3.1.3, the fix of CVE-2024-22195: keys with white space are rejected.</span>
+<span class="c">;</span>
+<span class="c">;   _space_re = re.compile(r&quot;\s&quot;, flags=re.ASCII)</span>
+<span class="c">;   if _space_re.search(key) is not None:</span>
+<span class="c">;       raise ValueError(f&quot;Spaces are not allowed in attributes: &#x27;{key}&#x27;&quot;)</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> key String)
+(<span class="k">define-fun</span> escape ((s String)) String   <span class="c">; markupsafe.escape</span>
+  (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> s
+    <span class="s">&quot;&amp;&quot;</span> <span class="s">&quot;&amp;amp;&quot;</span>) <span class="s">&quot;&gt;&quot;</span> <span class="s">&quot;&amp;gt;&quot;</span>) <span class="s">&quot;&lt;&quot;</span> <span class="s">&quot;&amp;lt;&quot;</span>) <span class="s">&quot;\u{27}&quot;</span> <span class="s">&quot;&amp;#39;&quot;</span>) <span class="s">&quot;\u{22}&quot;</span> <span class="s">&quot;&amp;#34;&quot;</span>))
+(<span class="k">assert</span> (not (<span class="f">str.in_re</span> key (<span class="f">re.++</span> <span class="f">re.all</span> (<span class="f">re.union</span> (<span class="f">str.to_re</span> <span class="s">&quot; &quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;\u{9}&quot;</span> <span class="s">&quot;\u{d}&quot;</span>)) <span class="f">re.all</span>))))
+<span class="c">; In HTML, an attribute name ends at a tab, LF, FF, space, &quot;/&quot;, &quot;=&quot; or &quot;&gt;&quot;.</span>
+<span class="c">; Can the key smuggle in a second attribute, an event handler?</span>
+(<span class="k">assert</span> (<span class="f">str.in_re</span> (escape key)
+  (<span class="f">re.++</span> <span class="f">re.all</span> (<span class="f">re.union</span> (<span class="f">str.to_re</span> <span class="s">&quot;\u{9}&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;\u{a}&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;\u{c}&quot;</span>)
+                          (<span class="f">str.to_re</span> <span class="s">&quot; &quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;/&quot;</span>))
+         (<span class="f">str.to_re</span> <span class="s">&quot;onmouseover&quot;</span>))))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=rVRtb9owEP4rJ09aEzWkJXSagLGpqorGxCZNTP1kCbnJJbhNbGQ7pRPiv-_swEAak_ZhERDfc-_3HN6yFzbqJyzXBbIRG8MXqZ5EBoO0nw4ScCuEUr6CLuHu4b6XXWc3vSzrD9-N4Bl_WthIt4LNSjoEuxY5gjAIBp8wd1ikXI3pAwDLoFySbkLaNNfNWtYYGc44t5wlUNaishNS3S7uZrO485Ll0TG1KEy-iihrDNKC0g6-aYWjztQ_RkiL8CDqFu-N0SYqOVt4dxuq8h6irvUGC5AKhHNGPrYO7QguthR2d8EZJY4sul6tK5nD9-lyMZ_derDAvKYgvVwr63zrsCB3VXW6Uirsla0CtLlYI0SRPejj_YHqG0MjzHO7tqLEtLPkCiCyzqQG17VvlAr8L4D1kQE4e8uZ_xXNekzt0fFjB1RuL3_o5Pogc95us_e7Dn0zGJ7C2W_4xsO-eWEtGgeRn26oQipPs59QRKxdXnq-Q4n0bpXUqjNz2puFcHHQGaEq3Ccadnn8sdj5RPsgcRyH1Zgp-Pzj6zwBccIjKNEgoCqIbmIanHhMYD5NYErfsEYJxbzy28bZhBJo043DryncUSi_7L5w27RVVWPYErBInBfHNCEpvqBysBKqqNF8OhnDcQLRfhf8wgaa_2Uah-bjP2FxHs53YWvhr8-ZaZ8iVx2P5821anRrUb-g8WaB8HyF-XPPCueFiv4rDd0cNQksYU24SiwbXSfM0Zler3SpsN0v" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">3</span><h3>Jinja2 3.1.4: reject every attribute-name terminator</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python · jinja2/filters.py</div>
+          <pre class="src"><code>_attr_key_re = re.compile(<span class="s">r&quot;[\s/&gt;=]&quot;</span>, flags=re.ASCII)
+...
+if _attr_key_re.search(key) is not None:
+    raise ValueError(f<span class="s">&quot;Invalid character in attribute name: {key!r}&quot;</span>)</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
+        </div>
+      </div>
+      <p class="after">Unsat: the current check, together with the escaping, blocks every
+key that would inject an attribute. Before release, a query like this one would have found the gap
+in the first fix.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/jinja-3.1.4.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; Jinja2 3.1.4, the fix of CVE-2024-34064: also reject &quot;/&quot;, &quot;&gt;&quot; and &quot;=&quot;.</span>
+<span class="c">;</span>
+<span class="c">;   _attr_key_re = re.compile(r&quot;[\s/&gt;=]&quot;, flags=re.ASCII)</span>
+<span class="c">;   if _attr_key_re.search(key) is not None:</span>
+<span class="c">;       raise ValueError(f&quot;Invalid character in attribute name: {key!r}&quot;)</span>
+<span class="c">;</span>
+<span class="c">; (unsat = no key gets past the check and injects an attribute)</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> key String)
+(<span class="k">define-fun</span> escape ((s String)) String   <span class="c">; markupsafe.escape</span>
+  (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> s
+    <span class="s">&quot;&amp;&quot;</span> <span class="s">&quot;&amp;amp;&quot;</span>) <span class="s">&quot;&gt;&quot;</span> <span class="s">&quot;&amp;gt;&quot;</span>) <span class="s">&quot;&lt;&quot;</span> <span class="s">&quot;&amp;lt;&quot;</span>) <span class="s">&quot;\u{27}&quot;</span> <span class="s">&quot;&amp;#39;&quot;</span>) <span class="s">&quot;\u{22}&quot;</span> <span class="s">&quot;&amp;#34;&quot;</span>))
+(<span class="k">assert</span> (not (<span class="f">str.in_re</span> key (<span class="f">re.++</span> <span class="f">re.all</span> (<span class="f">re.union</span> (<span class="f">str.to_re</span> <span class="s">&quot; &quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;\u{9}&quot;</span> <span class="s">&quot;\u{d}&quot;</span>)
+                                                    (<span class="f">str.to_re</span> <span class="s">&quot;/&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;&gt;&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;=&quot;</span>)) <span class="f">re.all</span>))))
+<span class="c">; In HTML, an attribute name ends at a tab, LF, FF, space, &quot;/&quot;, &quot;=&quot; or &quot;&gt;&quot;.</span>
+<span class="c">; Can the key smuggle in a second attribute, an event handler?</span>
+(<span class="k">assert</span> (<span class="f">str.in_re</span> (escape key)
+  (<span class="f">re.++</span> <span class="f">re.all</span> (<span class="f">re.union</span> (<span class="f">str.to_re</span> <span class="s">&quot;\u{9}&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;\u{a}&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;\u{c}&quot;</span>)
+                          (<span class="f">str.to_re</span> <span class="s">&quot; &quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;/&quot;</span>))
+         (<span class="f">str.to_re</span> <span class="s">&quot;onmouseover&quot;</span>))))
+(<span class="k">check-sat</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=rVRha9swEP0rNw2GTR23S8NGk6WjlJZldIPR0S_TCKp8dtTakpHk0FH633eS3SVZCxtjJrFO76R3p7sn37M1m77OmDQFsimbwUelb8QYDvPX-SQDv0Io1R2YEk6vzkbjg_FkdDg5eDOZgqidAYs3KD1wts9ZRsMxZyB0Qdacs5zrGf0AYCm8t8tb_LG0CHPalUvTtKrGxHL2jXO3fzz_HhjKWlRuTv6Ty9PFIu13q3KHIHcorFwlNEtBOdDGw2ejcdqvDo8VyiFcibrDM2uNTUrOFnotalWAXAkrpEcLSkOgVdedR9CiwSncE-kL-8BZOuSedNoJTzlrA-SDCr2DVjgfSyNXKG_jgalqVAhH9oaTOBKHflSbSkn4cr68vFicBLBAWQuLI2k0EQXaS9qiq95XKo2jstOATooWIUncoz8dDDriDBphb7vWiRLzfiXXAInzNrfY1kLiUtT1fwFcYAZq6itqL71F086oREO_Caj8MH_Xz-vHOefd_fjtQ4--PDzahse_4EmAw-GFc2g9JKGlMQulg2JChRJq_N5ekE5MkcZOK6P7Zd6EZZEujT4rdIVDoKM-TjCLvrPwD89OnP0YZxs5foLMw5mGfNM0jVpeaPjw9dNFtiOTKD1AXZB6PAjw4jqDi_MMzunvWmpCtrlgxArG9gHD_YJTogpSDDVyTVdVNUZhg0OSV7EJE4PiGrWHFSm2Rvt-q-KbYieD7ML1ior6m8I_1jl9CovnYfmnVjzT2N9bsL1_x2l0YzqHZo02LIvaind1RJeZJixjTfzsOTY9yJgnm4Y7-gCyh58" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+  </section>
+
+  <section class="story" id="cpython-urlsplit">
+    <div class="story-head">
+      <span class="cwe">CVE-2023-24329</span>
+      <h2><a href="#cpython-urlsplit">CPython: blocklist bypass in urllib.parse.urlsplit</a></h2>
+    </div>
+    <p class="intro">Applications often reject dangerous links by checking
+<code>urlsplit(url).scheme</code>. Browsers follow the
+<a href="https://url.spec.whatwg.org/">WHATWG URL standard</a>, which first strips leading control
+characters and spaces, but <code>urlsplit</code> before Python 3.11.4 did not. So Python and the
+browser could read a different scheme from the same URL
+(<a href="https://nvd.nist.gov/vuln/detail/CVE-2023-24329">CVE-2023-24329</a>,
+<a href="https://github.com/python/cpython/issues/102153">gh-102153</a>). The encoding models
+<code>urlsplit</code>'s scheme parsing from the CPython sources and the browser's parsing from the
+standard, and asks if they can disagree on <code>javascript:</code>.</p>
+    
+    <div class="step">
+      <div class="step-head"><span class="num">1</span><h3>CPython 3.11.2</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python · Lib/urllib/parse.py</div>
+          <pre class="src"><code>for b in _UNSAFE_URL_BYTES_TO_REMOVE:     <span class="c"># &quot;\t&quot;, &quot;\r&quot;, &quot;\n&quot;</span>
+    url = url.replace(b, <span class="s">&quot;&quot;</span>)
+i = url.find(<span class="s">&#x27;:&#x27;</span>)
+if i &gt; 0 and url[0].isascii() and url[0].isalpha():
+    for c in url[:i]:
+        if c not in scheme_chars:
+            break
+    else:
+        scheme, url = url[:i].lower(), url[i+1:]</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 1.84 s</div>
+          <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">url</span> = <span class="s">&quot;\u{0}JAVASCRIPT:alert(1)&quot;</span></div></div></div>
+        </div>
+      </div>
+      <p class="after">A single NUL byte in front of the URL is enough. <code>urlsplit</code>
+sees no scheme, so the blocklist passes the URL, and the browser strips the NUL and runs
+<code>javascript:</code>. Upper case is no obstacle either: the solver mixes it in because both
+sides compare case-insensitively.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/cpython-3.11.2.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; CPython 3.11.2, urllib.parse.urlsplit (CVE-2023-24329).  An app blocks</span>
+<span class="c">; dangerous link schemes:</span>
+<span class="c">;</span>
+<span class="c">;   def is_safe_link(url):</span>
+<span class="c">;       return urlsplit(url).scheme not in {&quot;javascript&quot;, &quot;data&quot;, &quot;vbscript&quot;}</span>
+<span class="c">;</span>
+<span class="c">; urlsplit:</span>
+<span class="c">;   for b in _UNSAFE_URL_BYTES_TO_REMOVE:          # &quot;\t&quot;, &quot;\r&quot;, &quot;\n&quot;</span>
+<span class="c">;       url = url.replace(b, &quot;&quot;)</span>
+<span class="c">;   i = url.find(&#x27;:&#x27;)</span>
+<span class="c">;   if i &gt; 0 and url[0].isascii() and url[0].isalpha():</span>
+<span class="c">;       for c in url[:i]:</span>
+<span class="c">;           if c not in scheme_chars: break</span>
+<span class="c">;       else:</span>
+<span class="c">;           scheme, url = url[:i].lower(), url[i+1:]</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> url String)
+(<span class="k">define-fun</span> remove_tabs ((s String)) String           <span class="c">; drop \t, \r, \n</span>
+  (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> s <span class="s">&quot;\u{9}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{d}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{a}&quot;</span> <span class="s">&quot;&quot;</span>))
+(<span class="k">define-fun</span> scheme_of ((u String)) String               <span class="c">; the scheme part of urlsplit</span>
+  (let ((s (<span class="f">str.substr</span> u 0 (<span class="f">str.indexof</span> u <span class="s">&quot;:&quot;</span> 0))))
+    (ite (and (<span class="f">str.contains</span> u <span class="s">&quot;:&quot;</span>)
+              (<span class="f">str.in_re</span> s (<span class="f">re.++</span> (<span class="f">re.union</span> (<span class="f">re.range</span> <span class="s">&quot;a&quot;</span> <span class="s">&quot;z&quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;A&quot;</span> <span class="s">&quot;Z&quot;</span>))
+                                  (<span class="f">re.*</span> (<span class="f">re.union</span> (<span class="f">re.range</span> <span class="s">&quot;a&quot;</span> <span class="s">&quot;z&quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;A&quot;</span> <span class="s">&quot;Z&quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;0&quot;</span> <span class="s">&quot;9&quot;</span>)
+                                                  (<span class="f">str.to_re</span> <span class="s">&quot;+&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;-&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;.&quot;</span>))))))
+         (<span class="f">str.to_lower</span> s)
+         <span class="s">&quot;&quot;</span>)))
+(<span class="k">define-fun</span> c0_or_space () RegLan (<span class="f">re.range</span> <span class="s">&quot;\u{0}&quot;</span> <span class="s">&quot; &quot;</span>))
+<span class="c">; lstrip(C0 control or space): url = lead ++ rest, rest does not start with one</span>
+(<span class="k">declare-const</span> lead String)
+(<span class="k">declare-const</span> rest String)
+(<span class="k">assert</span> (= url (<span class="f">str.++</span> lead rest)))
+(<span class="k">assert</span> (<span class="f">str.in_re</span> lead (<span class="f">re.*</span> c0_or_space)))
+(<span class="k">assert</span> (not (<span class="f">str.in_re</span> rest (<span class="f">re.++</span> c0_or_space <span class="f">re.all</span>))))
+<span class="c">; The browser (WHATWG URL standard) strips leading C0 controls and spaces,</span>
+<span class="c">; removes tabs and newlines, and reads the scheme case-insensitively.</span>
+<span class="c">; Does it run a javascript: URL that the blocklist let through?</span>
+(<span class="k">assert</span> (<span class="f">str.prefixof</span> <span class="s">&quot;javascript:&quot;</span> (<span class="f">str.to_lower</span> (remove_tabs rest))))
+(<span class="k">assert</span> (<span class="f">str.suffixof</span> <span class="s">&quot;alert(1)&quot;</span> url))
+(<span class="k">define-fun</span> scheme () String (scheme_of (remove_tabs url)))
+(<span class="k">assert</span> (not (= scheme <span class="s">&quot;javascript&quot;</span>)))
+(<span class="k">assert</span> (not (= scheme <span class="s">&quot;data&quot;</span>)))
+(<span class="k">assert</span> (not (= scheme <span class="s">&quot;vbscript&quot;</span>)))
+(<span class="k">check-sat</span>)
+(<span class="k">get-model</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=nVZtb9s2EP4rB-1DqcUWZGdfoqAbvMzdBqTrmqQttioQKIm2uTCUQFJOuyD_vXekFMtOkRXTB73cHR_ePXfH0320jbLZJKqaWkRZdApnf352m0bDcTKbJfMJdEYpWSYtN1Yk-GFbJR2ws_fL6TydH0_nPxzPT-IEYKGBty2UqqlubK5PoeZ6LUzTWVBS34CtNuJW2AxVpAWoxQqkLSxfiYIsGKLHWdDRZYTrjIZhT69OAgroxoHUcJ9H__Att5WRrcujCeRRzR0Pb9tykD_0ew5Q_SarxkBJMMW7Py4Xr5bFu4vz4ue_rpaXxdWb4mL5-s37ZQaP13eImef9NnluhheNt0encQt4SffEiFbxSrDSW0VxsJG9diV1zV5kLwYxUgE_Qgpc16T_mF4n0mJgUrL4QKjaDWdjoiiOiuIgm0xej1QQsKuBsEBfUW0wnRmURvCbnbFQVhysDfaTXViEn6jmThgWe_FHeTTLrnPNrHBT1axlBW9fFZfnvy8wNFaLSnEjplWjrfMol85IvQ46JEFMV53GVN82W1E4XlpgzA5Gcf8ycgjLyjQtYB6Q1tzQTecagFlnBsoLrtQ3CKzPXnd_8pBHIUW9oD4U8EfBgd89nc0Kve6e8Tp47jaiXwHYTg5w2VCRPgQlnI_ee2q7Eh_QYU34b6wX8YlWoCMZupPGMXlDyEw6AYyKxFsi145LbQfT3mp39XiFQXeAGZEcHflHpyU2Pr0Zal1czX3c_xITY_HCi_8OfMB_XrT0-_-7w5449eKTr8T0LZeP2zUUdx4deeyxZPpEklCEO573QHwPgB2rQoUclEiVFo0pbItVB9jKF2J9zvcpoApLQ4VBoPQUFO4iW3aWAmXTNAqwxz1InPXNqASvATNnhMVeoDvUjbC-062j-rqTbgONFk_60C8dN-JY6ZF2Sm6tQCzmuz9Ej5t6BLIM8Q5Gu8LyBiHxIwb2rcnT0RK_cV-OY9ZQgu0a0nAKV9hEpWnuEALYh98WVx9-BTy3KWRdc1PH4Kmz3gPqwh2H1h-kHtROCCscOxb8uUM6Le5wEqHWf-HpWNtx11bciil2ltBWOrkV6nNCML8Q7TgUDaabw24gZd4xt-HOg_jJqKTnnyQ4Gtebnw7Yaw2WDvX5eLJRv-_XHRufmH0eDhNhu9UAxRVK2SxGHJqiXz3FqDr7g4uNzrXxRn7tkwy-HAD2h_HzlmFMP2-zG-DBDuXVzdRyRx9rHDe3-NOi8COaRLf-L8ZGWTqJHL7j4xP-z0QPXwA" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+    <div class="step">
+      <div class="step-head"><span class="num">2</span><h3>CPython 3.11.4: strip like the browser</h3></div>
+      <div class="grid">
+        <div class="pane">
+          <div class="pane-label">python · Lib/urllib/parse.py</div>
+          <pre class="src"><code><span class="c"># Only lstrip url as some applications rely on preserving trailing space.</span>
+url = url.lstrip(_WHATWG_C0_CONTROL_OR_SPACE)
+scheme = scheme.strip(_WHATWG_C0_CONTROL_OR_SPACE)
+for b in _UNSAFE_URL_BYTES_TO_REMOVE:
+    ...</code></pre>
+        </div>
+        <div class="pane result">
+          <div class="pane-label">Z3-Noodler · 2.98 s</div>
+          <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
+        </div>
+      </div>
+      <p class="after">Unsat: after the fix, Python and the browser agree on the scheme for
+every string. The proof covers the interplay of <code>lstrip</code>, tab and newline removal,
+<code>find</code>, slicing and lower-casing.</p>
+      <details>
+        <summary>SMT-LIB encoding <span class="file">cases/cpython-3.11.4.smt2</span></summary>
+        <pre class="smt"><code><span class="c">; CPython 3.11.4, the fix: urlsplit first strips leading C0 controls and</span>
+<span class="c">; spaces, like the WHATWG URL standard does.</span>
+<span class="c">;</span>
+<span class="c">;   url = url.lstrip(_WHATWG_C0_CONTROL_OR_SPACE)</span>
+<span class="c">;   for b in _UNSAFE_URL_BYTES_TO_REMOVE: ...      # as before</span>
+<span class="c">;</span>
+<span class="c">; (unsat = the blocklist now sees the scheme the browser sees)</span>
+(<span class="k">set-logic</span> QF_SLIA)
+(<span class="k">declare-const</span> url String)
+(<span class="k">define-fun</span> remove_tabs ((s String)) String           <span class="c">; drop \t, \r, \n</span>
+  (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> (<span class="f">str.replace_all</span> s <span class="s">&quot;\u{9}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{d}&quot;</span> <span class="s">&quot;&quot;</span>) <span class="s">&quot;\u{a}&quot;</span> <span class="s">&quot;&quot;</span>))
+(<span class="k">define-fun</span> scheme_of ((u String)) String               <span class="c">; the scheme part of urlsplit</span>
+  (let ((s (<span class="f">str.substr</span> u 0 (<span class="f">str.indexof</span> u <span class="s">&quot;:&quot;</span> 0))))
+    (ite (and (<span class="f">str.contains</span> u <span class="s">&quot;:&quot;</span>)
+              (<span class="f">str.in_re</span> s (<span class="f">re.++</span> (<span class="f">re.union</span> (<span class="f">re.range</span> <span class="s">&quot;a&quot;</span> <span class="s">&quot;z&quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;A&quot;</span> <span class="s">&quot;Z&quot;</span>))
+                                  (<span class="f">re.*</span> (<span class="f">re.union</span> (<span class="f">re.range</span> <span class="s">&quot;a&quot;</span> <span class="s">&quot;z&quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;A&quot;</span> <span class="s">&quot;Z&quot;</span>) (<span class="f">re.range</span> <span class="s">&quot;0&quot;</span> <span class="s">&quot;9&quot;</span>)
+                                                  (<span class="f">str.to_re</span> <span class="s">&quot;+&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;-&quot;</span>) (<span class="f">str.to_re</span> <span class="s">&quot;.&quot;</span>))))))
+         (<span class="f">str.to_lower</span> s)
+         <span class="s">&quot;&quot;</span>)))
+(<span class="k">define-fun</span> c0_or_space () RegLan (<span class="f">re.range</span> <span class="s">&quot;\u{0}&quot;</span> <span class="s">&quot; &quot;</span>))
+<span class="c">; lstrip(C0 control or space): url = lead ++ rest, rest does not start with one</span>
+(<span class="k">declare-const</span> lead String)
+(<span class="k">declare-const</span> rest String)
+(<span class="k">assert</span> (= url (<span class="f">str.++</span> lead rest)))
+(<span class="k">assert</span> (<span class="f">str.in_re</span> lead (<span class="f">re.*</span> c0_or_space)))
+(<span class="k">assert</span> (not (<span class="f">str.in_re</span> rest (<span class="f">re.++</span> c0_or_space <span class="f">re.all</span>))))
+<span class="c">; The browser (WHATWG URL standard) strips leading C0 controls and spaces,</span>
+<span class="c">; removes tabs and newlines, and reads the scheme case-insensitively.</span>
+<span class="c">; Does it run a javascript: URL that the blocklist let through?</span>
+(<span class="k">assert</span> (<span class="f">str.prefixof</span> <span class="s">&quot;javascript:&quot;</span> (<span class="f">str.to_lower</span> (remove_tabs rest))))
+(<span class="k">assert</span> (<span class="f">str.suffixof</span> <span class="s">&quot;alert(1)&quot;</span> url))
+(<span class="k">define-fun</span> scheme () String (scheme_of (remove_tabs rest)))   <span class="c">; rest = url.lstrip(...)</span>
+(<span class="k">assert</span> (not (= scheme <span class="s">&quot;javascript&quot;</span>)))
+(<span class="k">assert</span> (not (= scheme <span class="s">&quot;data&quot;</span>)))
+(<span class="k">assert</span> (not (= scheme <span class="s">&quot;vbscript&quot;</span>)))
+(<span class="k">check-sat</span>)
+</code></pre>
+      </details>
+      <a class="run" href="https://verifit.github.io/z3-noodler/playground/#z=nVVtb9MwEP4rp_AlYW3UCb6sFUKllBdprKMtIFAky03cNsyzK9tpB4j_zp2d0qQrDOEPeTnfPb7Xxz-ibdQ_70S5LkTUjwYwuv7m1lrBk_T8PH3aAbcWsCzv-lAZaTeydPhnrAPrTLmxIAUvSrWCUQ9yrZzR0gJXRaYGYDc8F7YDsrwRHubTm-H802v4ML1Ea1TipoBCC5uiNhkAnQHP6JlKjx-zYMNGPTaaXM2nk0s2mbLZ9XA0ToLJUhtYQKmAfbiaDV-NGcKzF5_n4xmbT9h0_G7ycdyHNE3Br0fALSwEWon61LhSljs8llxcSJ3fyBLjU3oHVgjrxTZfi9sQxMLonRXG76ELsRWuK_WqzOH9Kza7fDskYSFyyY3oYkoQiqKaYThqFfaWpRLdZaXAiFu9FczxhYU4tnulpP6AwxpAYfQGssx18GHooTIFEGOaUiM2ElPNuJT_ILCQRVlW_bj4mUX0GSW1oDgW8N-CI79DOpheotfVX7wOnjcSuOHGAZrte8mHIIXz0XtPbbXAF1TQC_-lKsQdWaAjfXSnlyTkDSHHpRMQYx8FTWo_Xiq7V621DqvGYwbdgdiI9OzMvypVYr_Tl-FqJdCa-7i_Uyaa4qEXfwn5gAcXmT7-3xNa4p4XX5yI6V-Wj9tpijuLzjx2U9K9J0kpwkOeWyBS76j5m1uhQ45aJO8xbZinAIgTmIrVJW-ngDqsFzoMQkoHUE_9gUwAp9uDJP2aHIhwACtnhMVZoKfnEJxX4iTqr13p1qCVuDeH3rQ5iM1Nj3TY5BaHHPvSs1GIHg_1CKQZ4t0rHRrLK4TCNzLQ1iZPGyb-4Lodm1lDCY5rKMMA5g3qiU8QafIAIe_ZmLAC7SCzEe_QnhI7iYVDrqY_gwgt2su5FV2cLKFs6cqtkN-IseElpR3vA4Pl5vCVb7nN0QXX9465NZJqm1Jp0N3a6Gq1fn6UvY3B1qE5z6IGEHZGu-_iJmPWdTguhK2WeyguURqfJ4iDVTzNYtSdNXHFDV47cZAnM1-t1hWFV8u96j7bgzfD2U_JnzQL7vhDOttFGwvl-U0X7y_8iTrRrb_LbdTvdSKH3_i6w1s9-vkL" target="_blank" rel="noopener">Run in the playground ↗</a>
+    </div>
+  </section>
+  <section class="part" id="patterns">
+    <p class="part-label">Part 2</p>
+    <h2 class="part-title">Classic bug patterns</h2>
+    <p class="intro">Five bug patterns that keep coming back in security advisories, each shown
+    with the typical code, a typical incomplete fix and a sound one.</p>
   </section>
 
   <section class="story" id="path-traversal">
@@ -75,7 +399,7 @@ again. Deleting a pattern can create a new copy of it from the characters on bot
     return open(os.path.join(UPLOAD_DIR, name))</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
           <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">name</span> = <span class="s">&quot;....//.&quot;</span></div></div></div>
         </div>
       </div>
@@ -108,7 +432,7 @@ middle glues the outer <code>..</code> and <code>/</code> into a new <code>../</
           <pre class="src"><code>name = name.replace(<span class="s">&quot;../&quot;</span>, <span class="s">&quot;&quot;</span>).replace(<span class="s">&quot;../&quot;</span>, <span class="s">&quot;&quot;</span>)</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
           <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">name</span> = <span class="s">&quot;......///.&quot;</span></div></div></div>
         </div>
       </div>
@@ -139,7 +463,7 @@ passes is enough, and the solver finds the counterexample for each one.</p>
           <pre class="src"><code>name = name.replace(<span class="s">&quot;..&quot;</span>, <span class="s">&quot;&quot;</span>)</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
           <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
         </div>
       </div>
@@ -183,7 +507,7 @@ other users. The browser reads tag names case-insensitively, so the encoding che
 }</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.14 s</div>
+          <div class="pane-label">Z3-Noodler · 0.16 s</div>
           <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">comment</span> = <span class="s">&quot;&lt;&lt;script&gt;SCRIPT&gt;&lt;&lt;script&gt;&quot;</span></div></div></div>
         </div>
       </div>
@@ -220,7 +544,7 @@ Deleting both <code>&lt;script&gt;</code> tags leaves <code>&lt;SCRIPT&gt;&lt;</
 }</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.25 s</div>
+          <div class="pane-label">Z3-Noodler · 0.26 s</div>
           <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">comment</span> = <span class="s">&quot;&lt;&lt;SCRIPT&gt;SCRIPT&gt;&lt;&lt;SCRIPT&gt;&quot;</span></div></div></div>
         </div>
       </div>
@@ -255,7 +579,7 @@ lower-casing and the replacement together, and still finds an attack.</p>
 }</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.02 s</div>
+          <div class="pane-label">Z3-Noodler · 0.03 s</div>
           <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
         </div>
       </div>
@@ -385,7 +709,7 @@ def is_safe_redirect(url):
     return SAFE.fullmatch(url) is not None</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="pane-label">Z3-Noodler · 0.04 s</div>
           <div class="result-body"><span class="verdict safe">unsat · proved safe</span></div>
         </div>
       </div>
@@ -436,7 +760,7 @@ if (!ALLOWED.test(url)) throw new Error(<span class="s">&quot;forbidden host&quo
 await fetch(url);</code></pre>
         </div>
         <div class="pane result">
-          <div class="pane-label">Z3-Noodler · 0.03 s</div>
+          <div class="pane-label">Z3-Noodler · 0.04 s</div>
           <div class="result-body"><span class="verdict bug">sat · bug found</span><div class="model"><div><span class="var">host</span> = <span class="s">&quot;api-example.com&quot;</span></div><div><span class="var">url</span> = <span class="s">&quot;https://api-example.com/&quot;</span></div><div><span class="var">path</span> = <span class="s">&quot;&quot;</span></div></div></div>
         </div>
       </div>
